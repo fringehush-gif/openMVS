@@ -101,6 +101,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;
 	}
+	if (!MVS::TexturePatchMergeTest()) {
+		VERBOSE("ERROR: TexturePatchMergeTest failed!");
+		return false;
+	}
 	if (!MVS::MeshBipyramidFixtureTest()) {
 		VERBOSE("ERROR: MeshBipyramidFixtureTest failed!");
 		return false;

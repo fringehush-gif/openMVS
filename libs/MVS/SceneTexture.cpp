@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "TexturePatchMerge.h"
 #include <halfmesh/RectPacking.h>
 // connected components
 #include <boost/graph/adjacency_list.hpp>
@@ -232,12 +233,6 @@ struct MeshTexture {
 		uint32_t patchIdx;
 	};
 	using PatchRectArr = std::vector<PatchRect>;
-
-	static bool IsContainedIn(const cv::Rect& a, const cv::Rect& b) {
-		return a.x >= b.x && a.y >= b.y
-			&& a.x+a.width <= b.x+b.width
-			&& a.y+a.height <= b.y+b.height;
-	}
 
 	// The generic packer works on bare rectangles, so patch identity never enters
 	// it; extract once per call site and index the placements back in lockstep.
@@ -2341,46 +2336,62 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 	// perform seam leveling
 	if (texturePatches.size() > 2 && (bGlobalSeamLeveling || bLocalSeamLeveling)) {
 		// create seam vertices and edges
-		CreateSeamVertices();
+		{
+			TD_TIMER_STARTD();
+			CreateSeamVertices();
+			VERBOSE("Texture seam graph completed: %u patches, %u seam vertices, %u seam edges (%s)",
+				(uint32_t)texturePatches.size()-1, (uint32_t)seamVertices.size(),
+				(uint32_t)seamEdges.size(), TD_TIMER_GET_FMT().c_str());
+		}
 
 		// perform global seam leveling
 		if (bGlobalSeamLeveling) {
 			TD_TIMER_STARTD();
 			GlobalSeamLeveling();
-			DEBUG_ULTIMATE("\tglobal seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
+			VERBOSE("Texture global seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
 
 		// perform local seam leveling
 		if (bLocalSeamLeveling) {
 			TD_TIMER_STARTD();
 			LocalSeamLeveling();
-			DEBUG_ULTIMATE("\tlocal seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
+			VERBOSE("Texture local seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
 	}
 
-	// merge texture patches with overlapping rectangles
-	for (unsigned i=0; i<texturePatches.size()-1; ++i) {
-		TexturePatch& texturePatchBig = texturePatches[i];
-		for (unsigned j=1; j<texturePatches.size(); ++j) {
-			if (i == j)
-				continue;
-			TexturePatch& texturePatchSmall = texturePatches[j];
-			if (texturePatchBig.label != texturePatchSmall.label)
-				continue;
-			if (!IsContainedIn(texturePatchSmall.rect, texturePatchBig.rect))
-				continue;
-			// translate texture coordinates
+	// Merge same-view texture patches whose source-image rectangles are already
+	// contained by another patch. The old nested scan compared every patch with
+	// every other patch and mutated the array while iterating; at million-patch
+	// scale that was quadratic, and removing an entry before the current outer
+	// index could also skip work. Build a stable, spatially indexed plan first,
+	// apply its UV/face moves in deterministic original order, then compact once.
+	if (texturePatches.size() > 2) {
+		TD_TIMER_STARTD();
+		const size_t numValidPatches(texturePatches.size()-1); // final patch is unmapped (NO_ID)
+		std::vector<PATCHMERGE::Patch> patches;
+		patches.reserve(numValidPatches);
+		for (size_t patchIdx=0; patchIdx<numValidPatches; ++patchIdx)
+			patches.push_back({texturePatches[patchIdx].label, texturePatches[patchIdx].rect});
+		const PATCHMERGE::Plan plan(PATCHMERGE::BuildPlan(patches));
+		ASSERT(plan.active.size() == numValidPatches);
+		for (const PATCHMERGE::Merge& merge: plan.merges) {
+			TexturePatch& texturePatchBig(texturePatches[merge.big]);
+			TexturePatch& texturePatchSmall(texturePatches[merge.small]);
 			const TexCoord offset(texturePatchSmall.rect.tl()-texturePatchBig.rect.tl());
 			for (const FIndex idxFace: texturePatchSmall.faces) {
-				TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
+				TexCoord* texcoords(faceTexcoords.data()+idxFace*3);
 				for (int v=0; v<3; ++v)
 					texcoords[v] += offset;
 			}
-			// join faces lists
 			texturePatchBig.faces.JoinRemove(texturePatchSmall.faces);
-			// remove the small patch
-			texturePatches.RemoveAtMove(j--);
 		}
+		for (size_t patchIdx=numValidPatches; patchIdx-- > 0;)
+			if (!plan.active[patchIdx])
+				texturePatches.RemoveAtMove(patchIdx);
+		VERBOSE("Texture patch containment merge completed: %zu input patches, %zu merges, %zu spatial candidates, %zu exact checks (%s)",
+			numValidPatches, plan.stats.merges,
+			plan.stats.spatialCandidates, plan.stats.containmentChecks,
+			TD_TIMER_GET_FMT().c_str());
 	}
 
 	// create texture
@@ -2421,10 +2432,10 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 
 		// pack patches: one pack per texture file
 		std::vector<PatchRectArr> placedRects; {
+			TD_TIMER_STARTD();
 			for (const PatchRectArr& patches : spatialGroups) {
 				if (patches.empty())
 					continue;
-				TD_TIMER_STARTD();
 				PackedTexturePages packed;
 				if (!PackTexturePages(patches, nTextureSizeMultiple, maxTextureSize, packed))
 					return false;
@@ -2435,10 +2446,10 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 					texturesDiffuse.emplace_back(pageSize.height, pageSize.width)
 						.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 				}
-				DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size, %u textures (%s)",
-					(unsigned)patches.size(), (unsigned)packed.pageSizes.front().width,
-					(unsigned)packed.pages.size(), TD_TIMER_GET_FMT().c_str());
 			}
+			VERBOSE("Texture atlas packing completed: %zu patches, %zu spatial groups, %zu texture pages (%s)",
+				texturePatches.size(), spatialGroups.size(), placedRects.size(),
+				TD_TIMER_GET_FMT().c_str());
 		}
 
 		#ifdef TEXOPT_USE_OPENMP
