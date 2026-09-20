@@ -579,6 +579,8 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		std::iota(views.begin(), views.end(), IIndex(0));
 	}
 	facesDatas.resize(faces.size());
+	std::atomic<uint64_t> completedViewCount(0);
+	std::atomic<uint64_t> sparsePostRasterVisits(0);
 	Util::Progress progress(_T("Initialized views"), views.size());
 	typedef float real;
 	TImage<real> imageGradMag;
@@ -681,6 +683,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.size());
 		areas.Memset(0);
 		#endif
+		Mesh::FaceIdxArr visibleFaces;
 
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp critical
@@ -708,6 +711,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				#else
 				if (faceDatas.empty() || faceDatas.back().idxView != idxView) {
 				#endif
+					visibleFaces.emplace_back(idxFace);
 					// create new face-data
 					FaceData& faceData = faceDatas.emplace_back();
 					faceData.idxView = idxView;
@@ -729,10 +733,9 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		}
 		// adjust face quality with camera angle relative to face normal
 		// tries to increase chances of a camera with perpendicular view on the surface (smoothened normals) to be selected
-		FOREACH(idxFace, facesDatas) {
+		for (FIndex idxFace : visibleFaces) {
 			FaceDataArr& faceDatas = facesDatas[idxFace];
-			if (faceDatas.empty() || faceDatas.back().idxView != idxView)
-				continue;
+			ASSERT(!faceDatas.empty() && faceDatas.back().idxView == idxView);
 			const Face& f = faces[idxFace];
 			const Vertex faceCenter((vertices[f[0]] + vertices[f[1]] + vertices[f[2]]) / 3.f);
 			const Point3f camDir(Cast<Mesh::Type>(imageData.camera.C) - faceCenter);
@@ -741,15 +744,20 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			faceDatas.back().quality *= SQUARE(cosFaceCam);
 		}
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-		FOREACH(idxFace, areas) {
+		for (FIndex idxFace : visibleFaces) {
 			const uint32_t& area = areas[idxFace];
-			if (area > 0) {
-				Color& color = facesDatas[idxFace].back().color;
-				color = RGB2YCBCR(Color(color * (1.f/(float)area)));
-			}
+			ASSERT(area > 0);
+			Color& color = facesDatas[idxFace].back().color;
+			color = RGB2YCBCR(Color(color * (1.f/(float)area)));
 		}
 		#endif
 		}
+		completedViewCount.fetch_add(1, std::memory_order_relaxed);
+		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		sparsePostRasterVisits.fetch_add(uint64_t(visibleFaces.size())*2, std::memory_order_relaxed);
+		#else
+		sparsePostRasterVisits.fetch_add(visibleFaces.size(), std::memory_order_relaxed);
+		#endif
 		++progress;
 	}
 	#ifdef TEXOPT_USE_OPENMP
@@ -757,6 +765,15 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		return false;
 	#endif
 	progress.close();
+	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+	const uint64_t fullPostRasterVisits(completedViewCount.load(std::memory_order_relaxed)*uint64_t(faces.size())*2);
+	#else
+	const uint64_t fullPostRasterVisits(completedViewCount.load(std::memory_order_relaxed)*uint64_t(faces.size()));
+	#endif
+	DEBUG_EXTRA("Texture visible-face iteration completed: %llu post-raster visits instead of %llu full-face visits across %llu views",
+		(unsigned long long)sparsePostRasterVisits.load(std::memory_order_relaxed),
+		(unsigned long long)fullPostRasterVisits,
+		(unsigned long long)completedViewCount.load(std::memory_order_relaxed));
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	if (fOutlierThreshold > 0) {
