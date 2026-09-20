@@ -224,13 +224,12 @@ public:
 	SEACAVE::CUDA::MemDevice ownerCounts;
 	SEACAVE::CUDA::MemDevice ownerOffsets;
 	SEACAVE::CUDA::MemDevice ownerList;
-	size_t ownerListCapacity = 0; // entries ownerList, ownerKeys and ownerListSorted hold
+	size_t ownerListCapacity = 0; // entries ownerList and ownerListSorted hold
 	Unsigned32Arr ownerOffsetsHost;
 	// the list every view's slice of which is reordered by image tile (kernelSortOwnersTile),
 	// the one the directions run over, and its scratch; the tile grid starts at 64x8 pixels and
 	// is coarsened until the largest view has at most 4096 tiles; the views' cameras in one
 	// device array for the kernels that cover every view in one launch (UploadImages())
-	SEACAVE::CUDA::MemDevice ownerKeys;
 	SEACAVE::CUDA::MemDevice ownerListSorted;
 	SEACAVE::CUDA::MemDevice cudaCameras;
 	int tileShiftX = 6, tileShiftY = 3;
@@ -727,7 +726,6 @@ bool MeshRefineCUDA::ScoreMesh(MeshRefineStep::Terms& out)
 	if (numOwners > ownerListCapacity) {
 		ownerListCapacity = numOwners + numOwners/4;
 		reportCudaError(ownerList.Reset(sizeof(uint32_t)*ownerListCapacity));
-		reportCudaError(ownerKeys.Reset(sizeof(uint32_t)*ownerListCapacity));
 		reportCudaError(ownerListSorted.Reset(sizeof(uint32_t)*ownerListCapacity));
 		ReleaseGraphs(); // the graphs hold the old list
 	}
@@ -739,7 +737,6 @@ bool MeshRefineCUDA::ScoreMesh(MeshRefineStep::Terms& out)
 			(const MVS::CUDA::Camera*)(CUdeviceptr)cudaCameras,
 			(const uint32_t*)(CUdeviceptr)ownerOffsets,
 			(const uint32_t*)(CUdeviceptr)ownerList,
-			(uint32_t*)(CUdeviceptr)ownerKeys,
 			(uint32_t*)(CUdeviceptr)ownerListSorted,
 			tileShiftX, tileShiftY, maxTileBuckets, numViews);
 	}
