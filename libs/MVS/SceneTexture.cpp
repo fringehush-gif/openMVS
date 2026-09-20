@@ -2046,6 +2046,34 @@ void MeshTexture::LocalSeamLeveling()
 	ASSERT(!seamVertices.empty());
 	const unsigned numPatches(texturePatches.size()-1);
 
+	// Build a compact patch -> seam-vertex incidence index once. The previous
+	// implementation scanned every seam vertex for every texture patch and
+	// discarded almost all of them. Keeping seam-vertex order in each CSR row
+	// preserves the exact traversal and blending semantics while changing the
+	// lookup cost from patches*seamVertices to their actual incidences.
+	TD_TIMER_STARTD();
+	std::vector<size_t> patchSeamOffsets(numPatches+1, 0);
+	for (const SeamVertex& seamVertex: seamVertices) {
+		for (const SeamVertex::Patch& patch: seamVertex.patches) {
+			ASSERT(patch.idxPatch < numPatches);
+			++patchSeamOffsets[patch.idxPatch+1];
+		}
+	}
+	for (size_t idxPatch=0; idxPatch<numPatches; ++idxPatch)
+		patchSeamOffsets[idxPatch+1] += patchSeamOffsets[idxPatch];
+	ASSERT(seamVertices.size() <= std::numeric_limits<uint32_t>::max());
+	std::vector<uint32_t> patchSeamVertices(patchSeamOffsets.back());
+	std::vector<size_t> patchSeamWrite(patchSeamOffsets.begin(), patchSeamOffsets.end()-1);
+	for (uint32_t idxSeamVertex=0; idxSeamVertex<seamVertices.size(); ++idxSeamVertex) {
+		const SeamVertex& seamVertex(seamVertices[idxSeamVertex]);
+		for (const SeamVertex::Patch& patch: seamVertex.patches)
+			patchSeamVertices[patchSeamWrite[patch.idxPatch]++] = idxSeamVertex;
+	}
+	VERBOSE("Texture local seam index completed: %u patches, %zu seam vertices, %zu indexed incidences instead of %llu full-scan visits (%s)",
+		numPatches, seamVertices.size(), patchSeamVertices.size(),
+		(unsigned long long)numPatches*(unsigned long long)seamVertices.size(),
+		TD_TIMER_GET_FMT().c_str());
+
 	// adjust texture patches locally, so that the border continues smoothly inside the patch
 	#ifdef TEXOPT_USE_OPENMP
 	#pragma omp parallel for schedule(dynamic)
@@ -2078,7 +2106,8 @@ void MeshTexture::LocalSeamLeveling()
 		// render the patch border meeting neighbor patches
 		const Sampler sampler;
 		const TexCoord offset(texturePatch.rect.tl());
-		for (const SeamVertex& seamVertex0: seamVertices) {
+		for (size_t idxPatchSeam=patchSeamOffsets[idxPatch]; idxPatchSeam<patchSeamOffsets[idxPatch+1]; ++idxPatchSeam) {
+			const SeamVertex& seamVertex0(seamVertices[patchSeamVertices[idxPatchSeam]]);
 			if (seamVertex0.patches.size() < 2)
 				continue;
 			const uint32_t idxVertPatch0(seamVertex0.patches.Find(idxPatch));
