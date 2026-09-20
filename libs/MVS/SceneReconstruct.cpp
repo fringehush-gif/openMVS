@@ -421,11 +421,8 @@ inline int checkEdges(const point_t& a, const point_t& b, const point_t& c, cons
 //  coplanar [out] : pointer to the 3 int array of indices of the edges coplanar with (s)
 // return -1 if there is no intersection or
 // the number of edges coplanar with the segment (0 = intersection inside the triangle)
-int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
+int intersect(const point_t& a, const point_t& b, const point_t& c, const segment_t& s, int coplanar[3])
 {
-	const point_t& a = t.vertex(0);
-	const point_t& b = t.vertex(1);
-	const point_t& c = t.vertex(2);
 	const point_t& p = s.source();
 	const point_t& q = s.target();
 
@@ -483,6 +480,22 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 	return -1;
 }
 
+// Facet vertices in the same negative orientation used by
+// CGAL::Triangulation_3::triangle(). Keep the fourth entry per facet for the
+// existing coplanar-edge lookup below.
+static constexpr int facet_vertex_order[] = {2,1,3,2, 2,3,0,2, 0,3,1,0, 0,1,2,0};
+
+inline int intersect(const facet_t& facet, const segment_t& seg, int coplanar[3])
+{
+	const int j(4*facet.second);
+	const cell_handle_t& cell(facet.first);
+	return intersect(
+		cell->vertex(facet_vertex_order[j+0])->point(),
+		cell->vertex(facet_vertex_order[j+1])->point(),
+		cell->vertex(facet_vertex_order[j+2])->point(),
+		seg, coplanar);
+}
+
 // Find which facet is intersected by the segment (seg) and return next facets to check:
 //  in_facets [in] : vector of facets to check
 //  out_facets [out] : vector of facets to check at next step (can be in_facets)
@@ -492,12 +505,11 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter, walk_stats_t& stats)
 {
 	ASSERT(!in_facets.empty());
-	static const int facet_vertex_order[] = {2,1,3,2,2,3,0,2,0,3,1,0,0,1,2,0};
 	int coplanar[3];
 	const REAL prevDist(inter.dist);
 	for (const facet_t& in_facet: in_facets) {
 		ASSERT(!Tr.is_infinite(in_facet));
-		const int nb_coplanar(intersect(Tr.triangle(in_facet), seg, coplanar));
+		const int nb_coplanar(intersect(in_facet, seg, coplanar));
 		if (nb_coplanar >= 0) {
 			if (nb_coplanar == 3) {
 				// coplanar with 3 edges = tangent: the segment travels in the facet's
@@ -614,7 +626,7 @@ bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const std::vector
 	int coplanar[3];
 	for (std::vector<facet_t>::const_iterator it=in_facets.cbegin(); it!=in_facets.cend(); ++it) {
 		ASSERT(!Tr.is_infinite(*it));
-		if (intersect(Tr.triangle(*it), seg, coplanar) == 0) {
+		if (intersect(*it, seg, coplanar) == 0) {
 			// face intersection
 			inter.facet = *it;
 			inter.type = intersection_t::FACET;
