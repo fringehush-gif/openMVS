@@ -2069,7 +2069,7 @@ void MeshTexture::LocalSeamLeveling()
 		for (const SeamVertex::Patch& patch: seamVertex.patches)
 			patchSeamVertices[patchSeamWrite[patch.idxPatch]++] = idxSeamVertex;
 	}
-	VERBOSE("Texture local seam index completed: %u patches, %zu seam vertices, %zu indexed incidences instead of %llu full-scan visits (%s)",
+	DEBUG_EXTRA("Texture local seam index completed: %u patches, %zu seam vertices, %zu indexed incidences instead of %llu full-scan visits (%s)",
 		numPatches, seamVertices.size(), patchSeamVertices.size(),
 		(unsigned long long)numPatches*(unsigned long long)seamVertices.size(),
 		TD_TIMER_GET_FMT().c_str());
@@ -2405,12 +2405,7 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		}
 	}
 
-	// Merge same-view texture patches whose source-image rectangles are already
-	// contained by another patch. The old nested scan compared every patch with
-	// every other patch and mutated the array while iterating; at million-patch
-	// scale that was quadratic, and removing an entry before the current outer
-	// index could also skip work. Build a stable, spatially indexed plan first,
-	// apply its UV/face moves in deterministic original order, then compact once.
+	// Apply same-view containment merges in deterministic original order.
 	if (texturePatches.size() > 2) {
 		TD_TIMER_STARTD();
 		const size_t numValidPatches(texturePatches.size()-1); // final patch is unmapped (NO_ID)
@@ -2420,21 +2415,9 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			patches.push_back({texturePatches[patchIdx].label, texturePatches[patchIdx].rect});
 		const PATCHMERGE::Plan plan(PATCHMERGE::BuildPlan(patches));
 		ASSERT(plan.active.size() == numValidPatches);
-		for (const PATCHMERGE::Merge& merge: plan.merges) {
-			TexturePatch& texturePatchBig(texturePatches[merge.big]);
-			TexturePatch& texturePatchSmall(texturePatches[merge.small]);
-			const TexCoord offset(texturePatchSmall.rect.tl()-texturePatchBig.rect.tl());
-			for (const FIndex idxFace: texturePatchSmall.faces) {
-				TexCoord* texcoords(faceTexcoords.data()+idxFace*3);
-				for (int v=0; v<3; ++v)
-					texcoords[v] += offset;
-			}
-			texturePatchBig.faces.JoinRemove(texturePatchSmall.faces);
-		}
-		for (size_t patchIdx=numValidPatches; patchIdx-- > 0;)
-			if (!plan.active[patchIdx])
-				texturePatches.RemoveAtMove(patchIdx);
-		VERBOSE("Texture patch containment merge completed: %zu input patches, %zu merges, %zu spatial candidates, %zu exact checks (%s)",
+		PATCHMERGE::ApplyFaceMoves(texturePatches, faceTexcoords, plan);
+		PATCHMERGE::CompactActivePatches(texturePatches, plan.active);
+		DEBUG_EXTRA("Texture patch containment merge completed: %zu input patches, %zu merges, %zu spatial candidates, %zu exact checks (%s)",
 			numValidPatches, plan.stats.merges,
 			plan.stats.spatialCandidates, plan.stats.containmentChecks,
 			TD_TIMER_GET_FMT().c_str());

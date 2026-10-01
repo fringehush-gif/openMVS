@@ -84,6 +84,12 @@ bool TexturePatchMergeTest()
 	// Patch zero must be removable as a contained peer; the old j=1 loop could not do this.
 	if (!check({{7, cv::Rect(2,2,1,1)}, {7, cv::Rect(0,0,4,4)}}))
 		return false;
+	const Plan patchZero(BuildPlan({{7, cv::Rect(2,2,1,1)}, {7, cv::Rect(0,0,4,4)}}));
+	if (patchZero.active != std::vector<uint8_t>{0,1} || patchZero.merges != std::vector<Merge>{{1,0}})
+		return false;
+	const Plan equalRectangles(BuildPlan({{4, cv::Rect(0,0,4,4)}, {4, cv::Rect(0,0,4,4)}}));
+	if (equalRectangles.active != std::vector<uint8_t>{1,0} || equalRectangles.merges != std::vector<Merge>{{0,1}})
+		return false;
 	// Equal boundaries are containment, and a nested chain must retain deterministic ownership.
 	if (!check({{3, cv::Rect(3,3,1,1)}, {3, cv::Rect(2,2,4,4)}, {3, cv::Rect(0,0,10,10)}}))
 		return false;
@@ -121,6 +127,77 @@ bool TexturePatchMergeTest()
 		VERBOSE("ERROR: TexturePatchMergeTest disjoint fixture did unnecessary work (%u candidates)",
 			(uint32_t)disjointPlan.stats.spatialCandidates);
 		return false;
+	}
+
+	// Interspersed removals leave a long surviving tail for repeated stable erase.
+	std::vector<Patch> removalHeavy;
+	for (uint32_t i=0; i<10000; ++i) {
+		removalHeavy.push_back({7, cv::Rect(int(i)*8,0,4,4)});
+		removalHeavy.push_back({7, cv::Rect(int(i)*8+1,1,1,1)});
+	}
+	const Plan removalPlan(BuildPlan(removalHeavy));
+	if (removalPlan.merges.size() != 10000)
+		return false;
+	struct OwnedPatch
+	{
+		uint32_t id{0};
+		Mesh::FaceIdxArr faces;
+		cv::Rect rect;
+	};
+	cList<OwnedPatch,const OwnedPatch&,1,1024,Mesh::FIndex> owned;
+	owned.resize(removalHeavy.size()+1);
+	for (uint32_t i=0; i<owned.size(); ++i) {
+		owned[i].id = i;
+		owned[i].faces.emplace_back(i);
+	}
+	CompactActivePatches(owned, removalPlan.active);
+	if (owned.size() != 10001 || owned.Last().id != 20000 || owned.Last().faces.front() != 20000)
+		return false;
+	for (uint32_t i=0; i<10000; ++i)
+		if (owned[i].id != i*2 || owned[i].faces.size() != 1 || owned[i].faces.front() != i*2)
+			return false;
+
+	// An unmapped-only array and a no-removal plan retain every element in place.
+	for (const uint32_t count: {0u,3u}) {
+		owned.resize(count+1);
+		for (uint32_t i=0; i<=count; ++i) {
+			owned[i].id = i;
+			owned[i].faces.clear();
+			owned[i].faces.emplace_back(i);
+		}
+		CompactActivePatches(owned, std::vector<uint8_t>(count,1));
+		if (owned.size() != count+1)
+			return false;
+		for (uint32_t i=0; i<=count; ++i)
+			if (owned[i].id != i || owned[i].faces.size() != 1 || owned[i].faces.front() != i)
+				return false;
+	}
+
+	// Nested face moves telescope their UV offsets and retain the unmapped patch.
+	const std::vector<Patch> nested{{3, cv::Rect(3,3,1,1)}, {3, cv::Rect(2,2,4,4)}, {3, cv::Rect(0,0,10,10)}};
+	const Plan nestedPlan(BuildPlan(nested));
+	owned.resize(4);
+	for (uint32_t i=0; i<4; ++i) {
+		owned[i].id = i;
+		owned[i].faces.clear();
+		owned[i].faces.emplace_back(i);
+		if (i<3)
+			owned[i].rect = nested[i].rect;
+	}
+	Mesh::TexCoordArr coordinates(12);
+	for (auto& coordinate: coordinates)
+		coordinate = Mesh::TexCoord(0,0);
+	ApplyFaceMoves(owned, coordinates, nestedPlan);
+	CompactActivePatches(owned, nestedPlan.active);
+	if (owned.size() != 2 || owned[0].id != 2 || owned[1].id != 3 || owned[0].faces.size() != 3)
+		return false;
+	if (owned[0].faces[0] != 2 || owned[0].faces[1] != 1 || owned[0].faces[2] != 0)
+		return false;
+	for (uint32_t face=0; face<4; ++face) {
+		const Mesh::TexCoord expected(face == 0 ? Mesh::TexCoord(3,3) : face == 1 ? Mesh::TexCoord(2,2) : Mesh::TexCoord(0,0));
+		for (uint32_t vertex=0; vertex<3; ++vertex)
+			if (coordinates[face*3+vertex] != expected)
+				return false;
 	}
 	return true;
 }
@@ -1928,6 +2005,58 @@ bool MeshCleanPerVertexTest()
 			return false;
 		}
 	}
+	// the grid above is uniform, so the webbing gate is a no-op on it and the bound survives
+	// whatever runs before it. Give the gate a lid to remove and the two-pass contract is what
+	// gets tested: the gate as its own Clean, the bound measured after it on the vertices the
+	// decimation receives, and the decimation still honouring it.
+	{
+		Mesh mesh;
+		MeshCleanBuildGrid(16, mesh);
+		const size_t numVertsGrid(mesh.vertices.size());
+		// the gate probes at 0.5x..reach x the face's longest edge and calls a face capped when
+		// some probe finds surface within cone(0.35) x that probe's distance, so a lid only trips
+		// it while its height sits inside [0.325, 0.675] x its own span: a 4x4 lid (longest edge
+		// 4*sqrt(2)) is centred in that window at height 0.5*4*sqrt(2). Its longest edge also has
+		// to clear 2x the median longest edge, which the grid pins at sqrt(2).
+		constexpr float lidSpan(4.f), lidHeight(lidSpan*(float)M_SQRT2/2);
+		const Mesh::VIndex lid0((Mesh::VIndex)mesh.vertices.size());
+		mesh.vertices.emplace_back(0.f, 0.f, lidHeight);
+		mesh.vertices.emplace_back(lidSpan, 0.f, lidHeight);
+		mesh.vertices.emplace_back(lidSpan, lidSpan, lidHeight);
+		mesh.faces.emplace_back(lid0, lid0+1, lid0+2);
+		const size_t numFaces(mesh.faces.size());
+		Mesh::CleanParams gateParams;
+		gateParams.maxEdgeScale = 2.f;
+		mesh.Clean(gateParams);
+		if (mesh.faces.size() >= numFaces || mesh.vertices.size() == numVertsGrid + 3) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest webbing gate removed nothing: %u -> %u faces, %u -> %u vertices!",
+				(unsigned)numFaces, mesh.faces.size(), (unsigned)(numVertsGrid+3), mesh.vertices.size());
+			return false;
+		}
+		// the field is measured on the mesh the decimation receives, never before the gate
+		const size_t numFacesGated(mesh.faces.size());
+		FloatArr bounds(mesh.vertices.size());
+		FOREACH(v, mesh.vertices)
+			bounds[v] = mesh.vertices[v].x < 8.f ? -1.f : 1e6f;
+		size_t lockedFaces0(0), lockedFaces1(0);
+		const auto CountLocked = [](const Mesh& m, size_t& faces) {
+			faces = 0;
+			for (const Mesh::Face& f: m.faces)
+				if (m.vertices[f[0]].x < 8.f && m.vertices[f[1]].x < 8.f && m.vertices[f[2]].x < 8.f)
+					++faces;
+		};
+		CountLocked(mesh, lockedFaces0);
+		Mesh::CleanParams params;
+		params.simplifyTarget = 1.f;
+		params.vertexMaxError = &bounds;
+		mesh.Clean(params);
+		CountLocked(mesh, lockedFaces1);
+		if (!(mesh.faces.size() < numFacesGated) || lockedFaces1 != lockedFaces0) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest two-pass bound: %u -> %u faces, locked %u -> %u faces!",
+				(unsigned)numFacesGated, mesh.faces.size(), (unsigned)lockedFaces0, (unsigned)lockedFaces1);
+			return false;
+		}
+	}
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -2224,6 +2353,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		return false;
 	constexpr float decimate = 0.7f;
 	Mesh::CleanParams cleanParams;
+	cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 	cleanParams.simplifyTarget = decimate;
 	cleanParams.spuriousFactor = 10.f;
 	cleanParams.removeSpikes = true;
