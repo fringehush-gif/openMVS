@@ -966,24 +966,12 @@ __global__ void kernelReduceFaceAreasPair(
 
 // H O S T   L A U N C H E R S ////////////////////////////////////////
 
-#ifndef OPENMVS_REFINE_PROJECT_BLOCK_SIZE
-#define OPENMVS_REFINE_PROJECT_BLOCK_SIZE 64
-#endif
-#ifndef OPENMVS_REFINE_PHOTO_BLOCK_SIZE
-#define OPENMVS_REFINE_PHOTO_BLOCK_SIZE 128
-#endif
-
-static_assert(OPENMVS_REFINE_PROJECT_BLOCK_SIZE >= 32 && OPENMVS_REFINE_PROJECT_BLOCK_SIZE <= 1024 &&
-	(OPENMVS_REFINE_PROJECT_BLOCK_SIZE % 32) == 0, "project block size must be a warp multiple");
-static_assert(OPENMVS_REFINE_PHOTO_BLOCK_SIZE >= 32 && OPENMVS_REFINE_PHOTO_BLOCK_SIZE <= 1024 &&
-	(OPENMVS_REFINE_PHOTO_BLOCK_SIZE % 32) == 0, "photo block size must be a warp multiple");
-
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
 	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint32_t* ownerBits,
 	const Camera& camera, uint32_t numFaces, bool resolve)
 {
-	const int blockSize = OPENMVS_REFINE_PROJECT_BLOCK_SIZE;
+	const int blockSize = 256;
 	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
 	if (resolve)
 		kernelProjectMesh<true><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, ownerBits, camera, numFaces);
@@ -1063,7 +1051,7 @@ void LaunchAccumulateFacePhoto(
 {
 	// small blocks, the box walks being uneven; the grid covers the slice with a 25 % margin for
 	// the evaluations replaying this launch from the graph
-	constexpr uint32_t blockSize = OPENMVS_REFINE_PHOTO_BLOCK_SIZE;
+	constexpr uint32_t blockSize = 128;
 	const uint32_t numBlocks = (numOwners + numOwners/4 + blockSize - 1) / blockSize;
 	kernelAccumulateFacePhoto<<<numBlocks ? numBlocks : 1u, blockSize, 0, stream>>>(
 		vertices, faces, ownerList, ownerOffsets, idxView, faceMap, pixelGrad, mask,
