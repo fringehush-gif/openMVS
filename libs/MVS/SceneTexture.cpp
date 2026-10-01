@@ -685,9 +685,9 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		#endif
 		Mesh::FaceIdxArr visibleFaces;
 
-		#ifdef TEXOPT_USE_OPENMP
-		#pragma omp critical
-		#endif
+#ifdef TEXOPT_USE_OPENMP
+	#pragma omp critical
+#endif
 		{
 		// faceQuality is influenced by :
 		// + area: the higher the area the more gradient scores will be added to the face quality
@@ -743,21 +743,21 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			const float cosFaceCam(MAXF(0.001f, ComputeAngle(camDir.ptr(), faceNormal.ptr())));
 			faceDatas.back().quality *= SQUARE(cosFaceCam);
 		}
-		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		for (FIndex idxFace : visibleFaces) {
 			const uint32_t& area = areas[idxFace];
 			ASSERT(area > 0);
 			Color& color = facesDatas[idxFace].back().color;
-			color = RGB2YCBCR(Color(color * (1.f/(float)area)));
+			color = RGB2YCBCR(Color(color * (1.f / (float)area)));
 		}
-		#endif
+#endif
 		}
 		completedViewCount.fetch_add(1, std::memory_order_relaxed);
-		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-		sparsePostRasterVisits.fetch_add(uint64_t(visibleFaces.size())*2, std::memory_order_relaxed);
-		#else
+#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		sparsePostRasterVisits.fetch_add(uint64_t(visibleFaces.size()) * 2, std::memory_order_relaxed);
+#else
 		sparsePostRasterVisits.fetch_add(visibleFaces.size(), std::memory_order_relaxed);
-		#endif
+#endif
 		++progress;
 	}
 	#ifdef TEXOPT_USE_OPENMP
@@ -765,24 +765,24 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		return false;
 	#endif
 	progress.close();
-	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-	const uint64_t fullPostRasterVisits(completedViewCount.load(std::memory_order_relaxed)*uint64_t(faces.size())*2);
-	#else
-	const uint64_t fullPostRasterVisits(completedViewCount.load(std::memory_order_relaxed)*uint64_t(faces.size()));
-	#endif
+#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+	const uint64_t fullPostRasterVisits(completedViewCount.load(std::memory_order_relaxed) * uint64_t(faces.size()) * 2);
+#else
+	const uint64_t fullPostRasterVisits(completedViewCount.load(std::memory_order_relaxed) * uint64_t(faces.size()));
+#endif
 	DEBUG_EXTRA("Texture visible-face iteration completed: %llu post-raster visits instead of %llu full-face visits across %llu views",
-		(unsigned long long)sparsePostRasterVisits.load(std::memory_order_relaxed),
-		(unsigned long long)fullPostRasterVisits,
-		(unsigned long long)completedViewCount.load(std::memory_order_relaxed));
+	            (unsigned long long)sparsePostRasterVisits.load(std::memory_order_relaxed),
+	            (unsigned long long)fullPostRasterVisits,
+	            (unsigned long long)completedViewCount.load(std::memory_order_relaxed));
 
-	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	if (fOutlierThreshold > 0) {
 		// try to detect outlier views for each face
 		// (views for which the face is occluded by a dynamic object in the scene, ex. pedestrians)
 		for (FaceDataArr& faceDatas: facesDatas)
 			FaceOutlierDetection(faceDatas, fOutlierThreshold);
 	}
-	#endif
+#endif
 	return true;
 }
 
@@ -2049,27 +2049,27 @@ void MeshTexture::LocalSeamLeveling()
 	// Index seam vertices by patch, preserving seam-vertex order in each row
 	// so local leveling visits the same incidences in the same blending order.
 	TD_TIMER_STARTD();
-	std::vector<size_t> patchSeamOffsets(numPatches+1, 0);
-	for (const SeamVertex& seamVertex: seamVertices) {
-		for (const SeamVertex::Patch& patch: seamVertex.patches) {
+	std::vector<size_t> patchSeamOffsets(numPatches + 1, 0);
+	for (const SeamVertex& seamVertex : seamVertices) {
+		for (const SeamVertex::Patch& patch : seamVertex.patches) {
 			ASSERT(patch.idxPatch < numPatches);
-			++patchSeamOffsets[patch.idxPatch+1];
+			++patchSeamOffsets[patch.idxPatch + 1];
 		}
 	}
-	for (size_t idxPatch=0; idxPatch<numPatches; ++idxPatch)
-		patchSeamOffsets[idxPatch+1] += patchSeamOffsets[idxPatch];
+	for (size_t idxPatch = 0; idxPatch < numPatches; ++idxPatch)
+		patchSeamOffsets[idxPatch + 1] += patchSeamOffsets[idxPatch];
 	ASSERT(seamVertices.size() <= std::numeric_limits<uint32_t>::max());
 	std::vector<uint32_t> patchSeamVertices(patchSeamOffsets.back());
-	std::vector<size_t> patchSeamWrite(patchSeamOffsets.begin(), patchSeamOffsets.end()-1);
-	for (uint32_t idxSeamVertex=0; idxSeamVertex<seamVertices.size(); ++idxSeamVertex) {
+	std::vector<size_t> patchSeamWrite(patchSeamOffsets.begin(), patchSeamOffsets.end() - 1);
+	for (uint32_t idxSeamVertex = 0; idxSeamVertex < seamVertices.size(); ++idxSeamVertex) {
 		const SeamVertex& seamVertex(seamVertices[idxSeamVertex]);
-		for (const SeamVertex::Patch& patch: seamVertex.patches)
+		for (const SeamVertex::Patch& patch : seamVertex.patches)
 			patchSeamVertices[patchSeamWrite[patch.idxPatch]++] = idxSeamVertex;
 	}
 	DEBUG_EXTRA("Texture local seam index completed: %u patches, %zu seam vertices, %zu indexed incidences instead of %llu full-scan visits (%s)",
-		numPatches, seamVertices.size(), patchSeamVertices.size(),
-		(unsigned long long)numPatches*(unsigned long long)seamVertices.size(),
-		TD_TIMER_GET_FMT().c_str());
+	            numPatches, seamVertices.size(), patchSeamVertices.size(),
+	            (unsigned long long)numPatches * (unsigned long long)seamVertices.size(),
+	            TD_TIMER_GET_FMT().c_str());
 
 	// adjust texture patches locally, so that the border continues smoothly inside the patch
 	#ifdef TEXOPT_USE_OPENMP
@@ -2103,7 +2103,7 @@ void MeshTexture::LocalSeamLeveling()
 		// render the patch border meeting neighbor patches
 		const Sampler sampler;
 		const TexCoord offset(texturePatch.rect.tl());
-		for (size_t idxPatchSeam=patchSeamOffsets[idxPatch]; idxPatchSeam<patchSeamOffsets[idxPatch+1]; ++idxPatchSeam) {
+		for (size_t idxPatchSeam = patchSeamOffsets[idxPatch]; idxPatchSeam < patchSeamOffsets[idxPatch + 1]; ++idxPatchSeam) {
 			const SeamVertex& seamVertex0(seamVertices[patchSeamVertices[idxPatchSeam]]);
 			if (seamVertex0.patches.size() < 2)
 				continue;
@@ -2383,8 +2383,8 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			TD_TIMER_STARTD();
 			CreateSeamVertices();
 			DEBUG_EXTRA("Texture seam graph completed: %u patches, %u seam vertices, %u seam edges (%s)",
-				(uint32_t)texturePatches.size()-1, (uint32_t)seamVertices.size(),
-				(uint32_t)seamEdges.size(), TD_TIMER_GET_FMT().c_str());
+			            (uint32_t)texturePatches.size() - 1, (uint32_t)seamVertices.size(),
+			            (uint32_t)seamEdges.size(), TD_TIMER_GET_FMT().c_str());
 		}
 
 		// perform global seam leveling
@@ -2405,19 +2405,19 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 	// Apply same-view containment merges in deterministic original order.
 	if (texturePatches.size() > 2) {
 		TD_TIMER_STARTD();
-		const size_t numValidPatches(texturePatches.size()-1); // final patch is unmapped (NO_ID)
+		const size_t numValidPatches(texturePatches.size() - 1); // final patch is unmapped (NO_ID)
 		std::vector<PATCHMERGE::Patch> patches;
 		patches.reserve(numValidPatches);
-		for (size_t patchIdx=0; patchIdx<numValidPatches; ++patchIdx)
+		for (size_t patchIdx = 0; patchIdx < numValidPatches; ++patchIdx)
 			patches.push_back({texturePatches[patchIdx].label, texturePatches[patchIdx].rect});
 		const PATCHMERGE::Plan plan(PATCHMERGE::BuildPlan(patches));
 		ASSERT(plan.active.size() == numValidPatches);
 		PATCHMERGE::ApplyFaceMoves(texturePatches, faceTexcoords, plan);
 		PATCHMERGE::CompactActivePatches(texturePatches, plan.active);
 		DEBUG_EXTRA("Texture patch containment merge completed: %zu input patches, %zu merges, %zu spatial candidates, %zu exact checks (%s)",
-			numValidPatches, plan.stats.merges,
-			plan.stats.spatialCandidates, plan.stats.containmentChecks,
-			TD_TIMER_GET_FMT().c_str());
+		            numValidPatches, plan.stats.merges,
+		            plan.stats.spatialCandidates, plan.stats.containmentChecks,
+		            TD_TIMER_GET_FMT().c_str());
 	}
 
 	// create texture
@@ -2474,8 +2474,8 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				}
 			}
 			DEBUG_EXTRA("Texture atlas packing completed: %zu patches, %zu spatial groups, %zu texture pages (%s)",
-				texturePatches.size(), spatialGroups.size(), placedRects.size(),
-				TD_TIMER_GET_FMT().c_str());
+			            texturePatches.size(), spatialGroups.size(), placedRects.size(),
+			            TD_TIMER_GET_FMT().c_str());
 		}
 
 		#ifdef TEXOPT_USE_OPENMP

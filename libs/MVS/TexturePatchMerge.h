@@ -73,16 +73,16 @@ struct Plan
 template <typename Patches, typename Texcoords>
 inline void ApplyFaceMoves(Patches& patches, Texcoords& texcoords, const Plan& plan)
 {
-	ASSERT(patches.size() == plan.active.size()+1);
-	for (const Merge& merge: plan.merges) {
+	ASSERT(patches.size() == plan.active.size() + 1);
+	for (const Merge& merge : plan.merges) {
 		ASSERT(merge.big < plan.active.size() && merge.small < plan.active.size());
 		auto& big(patches[merge.big]);
 		auto& small(patches[merge.small]);
-		const typename Texcoords::value_type offset(small.rect.tl()-big.rect.tl());
-		for (const auto idxFace: small.faces) {
-			ASSERT(size_t(idxFace)*3+2 < texcoords.size());
-			for (int idxVertex=0; idxVertex<3; ++idxVertex)
-				texcoords[size_t(idxFace)*3+idxVertex] += offset;
+		const typename Texcoords::value_type offset(small.rect.tl() - big.rect.tl());
+		for (const auto idxFace : small.faces) {
+			ASSERT(size_t(idxFace) * 3 + 2 < texcoords.size());
+			for (int idxVertex = 0; idxVertex < 3; ++idxVertex)
+				texcoords[size_t(idxFace) * 3 + idxVertex] += offset;
 		}
 		big.faces.JoinRemove(small.faces);
 	}
@@ -92,9 +92,9 @@ inline void ApplyFaceMoves(Patches& patches, Texcoords& texcoords, const Plan& p
 template <typename Patches>
 inline void CompactActivePatches(Patches& patches, const std::vector<uint8_t>& active)
 {
-	ASSERT(patches.size() == active.size()+1);
+	ASSERT(patches.size() == active.size() + 1);
 	size_t writeIdx(0);
-	for (size_t readIdx=0; readIdx<active.size(); ++readIdx) {
+	for (size_t readIdx = 0; readIdx < active.size(); ++readIdx) {
 		if (!active[readIdx])
 			continue;
 		if (writeIdx != readIdx)
@@ -103,7 +103,7 @@ inline void CompactActivePatches(Patches& patches, const std::vector<uint8_t>& a
 	}
 	if (writeIdx != active.size())
 		patches[writeIdx] = std::move(patches[active.size()]);
-	patches.resize(writeIdx+1);
+	patches.resize(writeIdx + 1);
 }
 
 namespace detail {
@@ -117,15 +117,15 @@ using RTree = bgi::rtree<Value, bgi::quadratic<16>>;
 inline Box ToBox(const cv::Rect& rect)
 {
 	ASSERT(rect.width >= 0 && rect.height >= 0);
-	return Box(Point(rect.x, rect.y), Point(rect.x+rect.width, rect.y+rect.height));
+	return Box(Point(rect.x, rect.y), Point(rect.x + rect.width, rect.y + rect.height));
 }
 
 inline bool IsContainedIn(const cv::Rect& small, const cv::Rect& big)
 {
 	ASSERT(small.width >= 0 && small.height >= 0 && big.width >= 0 && big.height >= 0);
 	return small.x >= big.x && small.y >= big.y
-		&& small.x+small.width <= big.x+big.width
-		&& small.y+small.height <= big.y+big.height;
+	       && small.x + small.width <= big.x + big.width
+	       && small.y + small.height <= big.y + big.height;
 }
 } // namespace detail
 
