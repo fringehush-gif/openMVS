@@ -52,6 +52,11 @@ DEFINE_LOG_NAME(lt, _T("Test    "));
 bool UnitTests()
 {
 	TD_TIMER_START();
+	if (!MVS::FacetIntersectionTest()) {
+		VERBOSE("ERROR: FacetIntersectionTest failed!");
+		return false;
+	}
+
 
 	if (!SEACAVE::cListTest<true>(100)) {
 		VERBOSE("ERROR: cListTest failed!");

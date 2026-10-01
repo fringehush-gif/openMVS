@@ -48,6 +48,7 @@ namespace MVS {
 
 // Forward declarations
 struct MVS_API DenseDepthMapData;
+MVS_API bool FacetIntersectionTest();
 
 class MVS_API Scene
 {
