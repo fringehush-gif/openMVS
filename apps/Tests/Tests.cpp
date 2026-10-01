@@ -57,7 +57,6 @@ bool UnitTests()
 		return false;
 	}
 
-
 	if (!SEACAVE::cListTest<true>(100)) {
 		VERBOSE("ERROR: cListTest failed!");
 		return false;

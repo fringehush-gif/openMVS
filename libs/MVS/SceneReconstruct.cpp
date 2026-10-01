@@ -483,18 +483,18 @@ int intersect(const point_t& a, const point_t& b, const point_t& c, const segmen
 // Facet vertices in the same negative orientation used by
 // CGAL::Triangulation_3::triangle(). Keep the fourth entry per facet for the
 // existing coplanar-edge lookup below.
-static constexpr int FACET_VERTEX_ORDER[] = {2,1,3,2, 2,3,0,2, 0,3,1,0, 0,1,2,0};
+static constexpr int FACET_VERTEX_ORDER[] = {2, 1, 3, 2, 2, 3, 0, 2, 0, 3, 1, 0, 0, 1, 2, 0};
 
 inline int intersect(const facet_t& facet, const segment_t& seg, int coplanar[3])
 {
 	ASSERT(facet.second >= 0 && facet.second < 4);
-	const int j(4*facet.second);
+	const int j(4 * facet.second);
 	const cell_handle_t& cell(facet.first);
 	return intersect(
-		cell->vertex(FACET_VERTEX_ORDER[j+0])->point(),
-		cell->vertex(FACET_VERTEX_ORDER[j+1])->point(),
-		cell->vertex(FACET_VERTEX_ORDER[j+2])->point(),
-		seg, coplanar);
+	    cell->vertex(FACET_VERTEX_ORDER[j + 0])->point(),
+	    cell->vertex(FACET_VERTEX_ORDER[j + 1])->point(),
+	    cell->vertex(FACET_VERTEX_ORDER[j + 2])->point(),
+	    seg, coplanar);
 }
 
 // Find which facet is intersected by the segment (seg) and return next facets to check:
@@ -545,12 +545,12 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				const int j(4 * inter.facet.second);
 				const int i1(j + coplanar[0]);
 				inter.type = intersection_t::EDGE;
-				inter.v1 = inter.facet.first->vertex(FACET_VERTEX_ORDER[i1+0]);
-				inter.v2 = inter.facet.first->vertex(FACET_VERTEX_ORDER[i1+1]);
+				inter.v1 = inter.facet.first->vertex(FACET_VERTEX_ORDER[i1 + 0]);
+				inter.v2 = inter.facet.first->vertex(FACET_VERTEX_ORDER[i1 + 1]);
 				// now find next facets to be checked as
 				// the two faces in this cell opposing this edge
 				out_facets.clear();
-				const edge_t out_edge(inter.facet.first, FACET_VERTEX_ORDER[i1+0], FACET_VERTEX_ORDER[i1+1]);
+				const edge_t out_edge(inter.facet.first, FACET_VERTEX_ORDER[i1 + 0], FACET_VERTEX_ORDER[i1 + 1]);
 				const typename delaunay_t::Cell_circulator efc(Tr.incident_cells(out_edge));
 				typename delaunay_t::Cell_circulator ifc(efc);
 				do {
@@ -571,11 +571,10 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				const int i1(j + coplanar[0]);
 				const int i2(j + coplanar[1]);
 				int i;
-				if (FACET_VERTEX_ORDER[i1] == FACET_VERTEX_ORDER[i2] || FACET_VERTEX_ORDER[i1] == FACET_VERTEX_ORDER[i2+1]) {
+				if (FACET_VERTEX_ORDER[i1] == FACET_VERTEX_ORDER[i2] || FACET_VERTEX_ORDER[i1] == FACET_VERTEX_ORDER[i2 + 1]) {
 					i = FACET_VERTEX_ORDER[i1];
-				} else
-				if (FACET_VERTEX_ORDER[i1+1] == FACET_VERTEX_ORDER[i2] || FACET_VERTEX_ORDER[i1+1] == FACET_VERTEX_ORDER[i2+1]) {
-					i = FACET_VERTEX_ORDER[i1+1];
+				} else if (FACET_VERTEX_ORDER[i1 + 1] == FACET_VERTEX_ORDER[i2] || FACET_VERTEX_ORDER[i1 + 1] == FACET_VERTEX_ORDER[i2 + 1]) {
+					i = FACET_VERTEX_ORDER[i1 + 1];
 				} else {
 					ASSERT("2 edges intersections without common vertex" == NULL);
 				}
@@ -744,31 +743,30 @@ bool MVS::FacetIntersectionTest()
 {
 	using namespace DELAUNAY;
 	delaunay_t triangulation;
-	const std::array<point_t,4> points{{point_t(0,0,0), point_t(4,0,0), point_t(0,4,0), point_t(0,0,4)}};
+	const std::array<point_t, 4> points{{point_t(0, 0, 0), point_t(4, 0, 0), point_t(0, 4, 0), point_t(0, 0, 4)}};
 	triangulation.insert(points.begin(), points.end());
 	ASSERT(triangulation.dimension() == 3);
 	const cell_handle_t cell(triangulation.finite_cells_begin());
-	for (int idxFacet=0; idxFacet<4; ++idxFacet) {
+	for (int idxFacet = 0; idxFacet < 4; ++idxFacet) {
 		const facet_t facet(cell, idxFacet);
 		const triangle_t triangle(triangulation.triangle(facet));
-		for (int idxVertex=0; idxVertex<3; ++idxVertex)
-			if (triangle.vertex(idxVertex) != cell->vertex(FACET_VERTEX_ORDER[4*idxFacet+idxVertex])->point())
+		for (int idxVertex = 0; idxVertex < 3; ++idxVertex)
+			if (triangle.vertex(idxVertex) != cell->vertex(FACET_VERTEX_ORDER[4 * idxFacet + idxVertex])->point())
 				return false;
 		const point_t& a(triangle.vertex(0));
 		const point_t& b(triangle.vertex(1));
 		const point_t& c(triangle.vertex(2));
-		const vector_t normal(CGAL::cross_product(b-a, c-a));
-		const point_t center(CGAL::centroid(a,b,c));
-		const point_t edge(CGAL::midpoint(a,b));
-		const std::array<segment_t,5> segments{{
-			segment_t(center-normal, center+normal),
-			segment_t(edge-normal, edge+normal),
-			segment_t(a-normal, a+normal),
-			segment_t(center, edge),
-			segment_t(center+normal, center+normal*2)}};
-		const int expected[]{0,1,2,3,-1};
-		for (size_t idxSegment=0; idxSegment<segments.size(); ++idxSegment) {
-			for (bool reverse: {false, true}) {
+		const vector_t normal(CGAL::cross_product(b - a, c - a));
+		const point_t center(CGAL::centroid(a, b, c));
+		const point_t edge(CGAL::midpoint(a, b));
+		const std::array<segment_t, 5> segments{{segment_t(center - normal, center + normal),
+		                                         segment_t(edge - normal, edge + normal),
+		                                         segment_t(a - normal, a + normal),
+		                                         segment_t(center, edge),
+		                                         segment_t(center + normal, center + normal * 2)}};
+		const int expected[]{0, 1, 2, 3, -1};
+		for (size_t idxSegment = 0; idxSegment < segments.size(); ++idxSegment) {
+			for (bool reverse : {false, true}) {
 				const segment_t segment(reverse ? segments[idxSegment].opposite() : segments[idxSegment]);
 				int referenceEdges[3]{}, directEdges[3]{};
 				const int reference(intersect(triangle.vertex(0), triangle.vertex(1), triangle.vertex(2), segment, referenceEdges));
@@ -776,7 +774,7 @@ bool MVS::FacetIntersectionTest()
 				if (reference != expected[idxSegment] || direct != reference)
 					return false;
 				if (direct > 0 && direct < 3)
-					for (int idxEdge=0; idxEdge<direct; ++idxEdge)
+					for (int idxEdge = 0; idxEdge < direct; ++idxEdge)
 						if (directEdges[idxEdge] != referenceEdges[idxEdge])
 							return false;
 			}
