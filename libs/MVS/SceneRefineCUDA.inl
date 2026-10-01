@@ -75,9 +75,9 @@ void LaunchCheckProjection(
 void LaunchCountOwners(const uint32_t* ownerBits, uint32_t* counts, uint32_t* offsets, uint32_t numWords, uint32_t numViews);
 void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uint32_t* ownerList, uint32_t numWords, uint32_t numViews);
 void LaunchSortOwnersTile(
-	const Point3* vertices, const Point3u* faces, const Camera* cameras,
-	const uint32_t* offsets, const uint32_t* listIn, uint32_t* listOut,
-	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
+    const Point3* vertices, const Point3u* faces, const Camera* cameras,
+    const uint32_t* offsets, const uint32_t* listIn, uint32_t* listOut,
+    int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
 
 // image B warped into A through the mesh, and mask, the pixels that made it; keepA/keepB are
 // the per-pixel keep-masks (one byte per pixel, non-zero = keep), NULL if disabled
