@@ -70,14 +70,14 @@ void LaunchCheckProjection(
 // their exclusive prefix sum then the total; ownerList (sized by the host to that total)
 // receives every view's owner faces in face order from its offset on; then every view's slice
 // of listIn is reordered into listOut by the image tile (2^tileShiftX x 2^tileShiftY pixels)
-// the face's box starts in, keys being scratch of the same size, with at most maxBuckets tiles
-// in any view, cameras one Camera per view
+// the face's box starts in, with at most maxBuckets tiles in any view, cameras one Camera per
+// view; the key is recomputed during scatter so no per-owner key buffer is retained
 void LaunchCountOwners(const uint32_t* ownerBits, uint32_t* counts, uint32_t* offsets, uint32_t numWords, uint32_t numViews);
 void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uint32_t* ownerList, uint32_t numWords, uint32_t numViews);
 void LaunchSortOwnersTile(
-	const Point3* vertices, const Point3u* faces, const Camera* cameras,
-	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
-	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
+    const Point3* vertices, const Point3u* faces, const Camera* cameras,
+    const uint32_t* offsets, const uint32_t* listIn, uint32_t* listOut,
+    int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
 
 // image B warped into A through the mesh, and mask, the pixels that made it; keepA/keepB are
 // the per-pixel keep-masks (one byte per pixel, non-zero = keep), NULL if disabled

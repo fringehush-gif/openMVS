@@ -327,7 +327,6 @@ __global__ void kernelSortOwnersTile(
 	const Camera* __restrict__ cameras, // one per view
 	const uint32_t* __restrict__ offsets,
 	const uint32_t* __restrict__ listIn,
-	uint32_t* __restrict__ keys, // scratch, one per list entry
 	uint32_t* __restrict__ listOut,
 	int tileShiftX, int tileShiftY)
 {
@@ -347,7 +346,6 @@ __global__ void kernelSortOwnersTile(
 		const bool seen(projectFace(vertices, faces[idxFace], camera, pf) && faceBBox(pf, camera, ixMin, ixMax, iyMin, iyMax));
 		ASSERT(seen); (void)seen; // it owns a pixel of this view
 		const uint32_t key = (uint32_t)((iyMin >> tileShiftY) * tilesX + (ixMin >> tileShiftX));
-		keys[off + i] = key;
 		atomicAdd(&hist[key], 1u);
 	}
 	__syncthreads();
@@ -363,8 +361,15 @@ __global__ void kernelSortOwnersTile(
 	}
 	__syncthreads();
 	for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
-		const uint32_t pos = atomicAdd(&hist[keys[off + i]], 1u);
-		listOut[off + pos] = listIn[off + i];
+		const uint32_t idxFace = listIn[off + i];
+		ProjectedFace pf;
+		int ixMin(0), ixMax(-1), iyMin(0), iyMax(-1);
+		const bool seen(projectFace(vertices, faces[idxFace], camera, pf) && faceBBox(pf, camera, ixMin, ixMax, iyMin, iyMax));
+		ASSERT(seen);
+		(void)seen;
+		const uint32_t key = (uint32_t)((iyMin >> tileShiftY) * tilesX + (ixMin >> tileShiftX));
+		const uint32_t pos = atomicAdd(&hist[key], 1u);
+		listOut[off + pos] = idxFace;
 	}
 }
 
@@ -998,13 +1003,13 @@ void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uin
 }
 
 void LaunchSortOwnersTile(
-	const Point3* vertices, const Point3u* faces, const Camera* cameras,
-	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
-	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews)
+    const Point3* vertices, const Point3u* faces, const Camera* cameras,
+    const uint32_t* offsets, const uint32_t* listIn, uint32_t* listOut,
+    int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews)
 {
 	ASSERT(maxBuckets <= 8192); // static limit of the dynamic shared memory
-	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t)*(maxBuckets + 32)>>>(
-		vertices, faces, cameras, offsets, listIn, keys, listOut, tileShiftX, tileShiftY);
+	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t) * (maxBuckets + 32)>>>(
+	    vertices, faces, cameras, offsets, listIn, listOut, tileShiftX, tileShiftY);
 }
 
 void LaunchImageMeshWarp(
