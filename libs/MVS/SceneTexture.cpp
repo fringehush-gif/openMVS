@@ -2046,11 +2046,8 @@ void MeshTexture::LocalSeamLeveling()
 	ASSERT(!seamVertices.empty());
 	const unsigned numPatches(texturePatches.size()-1);
 
-	// Build a compact patch -> seam-vertex incidence index once. The previous
-	// implementation scanned every seam vertex for every texture patch and
-	// discarded almost all of them. Keeping seam-vertex order in each CSR row
-	// preserves the exact traversal and blending semantics while changing the
-	// lookup cost from patches*seamVertices to their actual incidences.
+	// Index seam vertices by patch, preserving seam-vertex order in each row
+	// so local leveling visits the same incidences in the same blending order.
 	TD_TIMER_STARTD();
 	std::vector<size_t> patchSeamOffsets(numPatches+1, 0);
 	for (const SeamVertex& seamVertex: seamVertices) {
@@ -2385,7 +2382,7 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		{
 			TD_TIMER_STARTD();
 			CreateSeamVertices();
-			VERBOSE("Texture seam graph completed: %u patches, %u seam vertices, %u seam edges (%s)",
+			DEBUG_EXTRA("Texture seam graph completed: %u patches, %u seam vertices, %u seam edges (%s)",
 				(uint32_t)texturePatches.size()-1, (uint32_t)seamVertices.size(),
 				(uint32_t)seamEdges.size(), TD_TIMER_GET_FMT().c_str());
 		}
@@ -2394,14 +2391,14 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		if (bGlobalSeamLeveling) {
 			TD_TIMER_STARTD();
 			GlobalSeamLeveling();
-			VERBOSE("Texture global seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
+			DEBUG_ULTIMATE("Texture global seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
 
 		// perform local seam leveling
 		if (bLocalSeamLeveling) {
 			TD_TIMER_STARTD();
 			LocalSeamLeveling();
-			VERBOSE("Texture local seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
+			DEBUG_ULTIMATE("Texture local seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
 	}
 
@@ -2476,7 +2473,7 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 						.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 				}
 			}
-			VERBOSE("Texture atlas packing completed: %zu patches, %zu spatial groups, %zu texture pages (%s)",
+			DEBUG_EXTRA("Texture atlas packing completed: %zu patches, %zu spatial groups, %zu texture pages (%s)",
 				texturePatches.size(), spatialGroups.size(), placedRects.size(),
 				TD_TIMER_GET_FMT().c_str());
 		}
