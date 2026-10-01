@@ -31,6 +31,7 @@
 
 #include "../../libs/MVS.h"
 #include "../../libs/MVS/SceneRefineCommon.h"
+#include "../../libs/MVS/TexturePatchMerge.h"
 #include "Tests.h"
 #include "TestsMVS.h"
 #include <halfmesh/RectPacking.h>
@@ -44,6 +45,162 @@
 DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
+
+bool TexturePatchMergeTest()
+{
+	using namespace PATCHMERGE;
+	const auto buildReference = [](const std::vector<Patch>& patches) {
+		Plan plan;
+		plan.active.assign(patches.size(), uint8_t(1));
+		for (uint32_t bigIdx = 0; bigIdx < patches.size(); ++bigIdx) {
+			if (!plan.active[bigIdx])
+				continue;
+			++plan.stats.queries;
+			for (uint32_t smallIdx = 0; smallIdx < patches.size(); ++smallIdx) {
+				if (smallIdx == bigIdx || !plan.active[smallIdx] || patches[smallIdx].label != patches[bigIdx].label)
+					continue;
+				++plan.stats.containmentChecks;
+				if (!detail::IsContainedIn(patches[smallIdx].rect, patches[bigIdx].rect))
+					continue;
+				plan.merges.push_back({bigIdx, smallIdx});
+				plan.active[smallIdx] = 0;
+				++plan.stats.merges;
+			}
+		}
+		return plan;
+	};
+	const auto check = [&](const std::vector<Patch>& patches) {
+		const Plan indexed(BuildPlan(patches));
+		const Plan reference(buildReference(patches));
+		if (indexed.merges != reference.merges || indexed.active != reference.active) {
+			VERBOSE("ERROR: TexturePatchMergeTest indexed/reference mismatch (%u patches, %u vs %u merges)",
+			        (uint32_t)patches.size(), (uint32_t)indexed.merges.size(), (uint32_t)reference.merges.size());
+			return false;
+		}
+		return true;
+	};
+
+	// Patch zero must be removable as a contained peer; the old j=1 loop could not do this.
+	if (!check({{7, cv::Rect(2, 2, 1, 1)}, {7, cv::Rect(0, 0, 4, 4)}}))
+		return false;
+	const Plan patchZero(BuildPlan({{7, cv::Rect(2, 2, 1, 1)}, {7, cv::Rect(0, 0, 4, 4)}}));
+	if (patchZero.active != std::vector<uint8_t>{0, 1} || patchZero.merges != std::vector<Merge>{{1, 0}})
+		return false;
+	const Plan equalRectangles(BuildPlan({{4, cv::Rect(0, 0, 4, 4)}, {4, cv::Rect(0, 0, 4, 4)}}));
+	if (equalRectangles.active != std::vector<uint8_t>{1, 0} || equalRectangles.merges != std::vector<Merge>{{0, 1}})
+		return false;
+	// Equal boundaries are containment, and a nested chain must retain deterministic ownership.
+	if (!check({{3, cv::Rect(3, 3, 1, 1)}, {3, cv::Rect(2, 2, 4, 4)}, {3, cv::Rect(0, 0, 10, 10)}}))
+		return false;
+	if (!check({{4, cv::Rect(0, 0, 10, 10)}, {4, cv::Rect(0, 5, 10, 5)}}))
+		return false;
+	// Overlap without containment and identical rectangles with different labels stay separate.
+	if (!check({{1, cv::Rect(0, 0, 10, 10)}, {1, cv::Rect(5, 5, 10, 10)}, {2, cv::Rect(0, 0, 10, 10)}}))
+		return false;
+
+	// Compare indexed and simple deterministic implementations across a varied fixed fixture.
+	std::vector<Patch> varied;
+	varied.reserve(2048);
+	uint32_t state(0x13579BDFu);
+	for (uint32_t i = 0; i < 2048; ++i) {
+		state = state * 1664525u + 1013904223u;
+		const int x((state >> 8) % 512);
+		state = state * 1664525u + 1013904223u;
+		const int y((state >> 8) % 512);
+		state = state * 1664525u + 1013904223u;
+		const int width(1 + (state >> 16) % 48);
+		state = state * 1664525u + 1013904223u;
+		const int height(1 + (state >> 16) % 48);
+		varied.push_back({i % 17, cv::Rect(x, y, width, height)});
+	}
+	if (!check(varied))
+		return false;
+
+	// A large disjoint fixture proves the indexed path does not regress to all-pairs work.
+	std::vector<Patch> disjoint;
+	disjoint.reserve(50000);
+	for (uint32_t i = 0; i < 50000; ++i)
+		disjoint.push_back({i % 128, cv::Rect((int)(i / 128) * 4, (int)(i % 128) * 4, 1, 1)});
+	const Plan disjointPlan(BuildPlan(disjoint));
+	if (!disjointPlan.merges.empty() || disjointPlan.stats.spatialCandidates > disjoint.size() * 2) {
+		VERBOSE("ERROR: TexturePatchMergeTest disjoint fixture did unnecessary work (%u candidates)",
+		        (uint32_t)disjointPlan.stats.spatialCandidates);
+		return false;
+	}
+
+	// Interspersed removals leave a long surviving tail for repeated stable erase.
+	std::vector<Patch> removalHeavy;
+	for (uint32_t i = 0; i < 10000; ++i) {
+		removalHeavy.push_back({7, cv::Rect(int(i) * 8, 0, 4, 4)});
+		removalHeavy.push_back({7, cv::Rect(int(i) * 8 + 1, 1, 1, 1)});
+	}
+	const Plan removalPlan(BuildPlan(removalHeavy));
+	if (removalPlan.merges.size() != 10000)
+		return false;
+	struct OwnedPatch
+	{
+		uint32_t id{0};
+		Mesh::FaceIdxArr faces;
+		cv::Rect rect;
+	};
+	cList<OwnedPatch, const OwnedPatch&, 1, 1024, Mesh::FIndex> owned;
+	owned.resize(removalHeavy.size() + 1);
+	for (uint32_t i = 0; i < owned.size(); ++i) {
+		owned[i].id = i;
+		owned[i].faces.emplace_back(i);
+	}
+	CompactActivePatches(owned, removalPlan.active);
+	if (owned.size() != 10001 || owned.Last().id != 20000 || owned.Last().faces.front() != 20000)
+		return false;
+	for (uint32_t i = 0; i < 10000; ++i)
+		if (owned[i].id != i * 2 || owned[i].faces.size() != 1 || owned[i].faces.front() != i * 2)
+			return false;
+
+	// An unmapped-only array and a no-removal plan retain every element in place.
+	for (const uint32_t count : {0u, 3u}) {
+		owned.resize(count + 1);
+		for (uint32_t i = 0; i <= count; ++i) {
+			owned[i].id = i;
+			owned[i].faces.clear();
+			owned[i].faces.emplace_back(i);
+		}
+		CompactActivePatches(owned, std::vector<uint8_t>(count, 1));
+		if (owned.size() != count + 1)
+			return false;
+		for (uint32_t i = 0; i <= count; ++i)
+			if (owned[i].id != i || owned[i].faces.size() != 1 || owned[i].faces.front() != i)
+				return false;
+	}
+
+	// Nested face moves telescope their UV offsets and retain the unmapped patch.
+	const std::vector<Patch> nested{{3, cv::Rect(3, 3, 1, 1)}, {3, cv::Rect(2, 2, 4, 4)}, {3, cv::Rect(0, 0, 10, 10)}};
+	const Plan nestedPlan(BuildPlan(nested));
+	owned.resize(4);
+	for (uint32_t i = 0; i < 4; ++i) {
+		owned[i].id = i;
+		owned[i].faces.clear();
+		owned[i].faces.emplace_back(i);
+		if (i < 3)
+			owned[i].rect = nested[i].rect;
+	}
+	Mesh::TexCoordArr coordinates(12);
+	for (auto& coordinate : coordinates)
+		coordinate = Mesh::TexCoord(0, 0);
+	ApplyFaceMoves(owned, coordinates, nestedPlan);
+	CompactActivePatches(owned, nestedPlan.active);
+	if (owned.size() != 2 || owned[0].id != 2 || owned[1].id != 3 || owned[0].faces.size() != 3)
+		return false;
+	if (owned[0].faces[0] != 2 || owned[0].faces[1] != 1 || owned[0].faces[2] != 0)
+		return false;
+	for (uint32_t face = 0; face < 4; ++face) {
+		const Mesh::TexCoord expected(face == 0 ? Mesh::TexCoord(3, 3) : face == 1 ? Mesh::TexCoord(2, 2)
+		                                                                           : Mesh::TexCoord(0, 0));
+		for (uint32_t vertex = 0; vertex < 3; ++vertex)
+			if (coordinates[face * 3 + vertex] != expected)
+				return false;
+	}
+	return true;
+}
 
 bool MeshVertexColorsPLYTest()
 {

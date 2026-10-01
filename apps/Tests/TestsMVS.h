@@ -41,6 +41,9 @@ namespace MVS {
 bool MeshVertexColorsPLYTest();
 bool MeshHalfMeshProcessingTest();
 
+// test deterministic, spatially indexed texture-patch containment merging
+bool TexturePatchMergeTest();
+
 // test the pixel-unit bold-driver optimizer (MeshRefineStep, SceneRefineCommon.h) against
 // hand-built Terms arrays: no images, no scene, milliseconds to run
 bool MeshRefineStepTest();

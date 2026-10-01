@@ -52,7 +52,6 @@ DEFINE_LOG_NAME(lt, _T("Test    "));
 bool UnitTests()
 {
 	TD_TIMER_START();
-
 	if (!SEACAVE::cListTest<true>(100)) {
 		VERBOSE("ERROR: cListTest failed!");
 		return false;
@@ -99,6 +98,10 @@ bool UnitTests()
 	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
+		return false;
+	}
+	if (!MVS::TexturePatchMergeTest()) {
+		VERBOSE("ERROR: TexturePatchMergeTest failed!");
 		return false;
 	}
 	if (!MVS::MeshBipyramidFixtureTest()) {
