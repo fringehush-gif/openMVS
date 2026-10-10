@@ -51,6 +51,10 @@ DEFINE_LOG_NAME(lt, _T("Test    "));
 // test various algorithms independently
 bool UnitTests()
 {
+	if (!MVS::PatchMatchTopKLifecycleTest()) {
+		VERBOSE("ERROR: PatchMatchTopKLifecycleTest failed!");
+		return false;
+	}
 	TD_TIMER_START();
 
 	if (!SEACAVE::cListTest<true>(100)) {
@@ -185,7 +189,9 @@ int main(int argc, LPCTSTR* argv)
 	// run the selected suite inside a lambda so the teardown below is reached on failure
 	// too: the log file in particular must be closed, or a failing run truncates its own log
 	const bool succeeded = [&]() {
-		if (argc < 2 || std::atoi(argv[1]) == 0) {
+		if (argc > 1 && String(argv[1]) == _T("patchmatch-topk")) {
+			return MVS::PatchMatchTopKLifecycleTest();
+		} else if (argc < 2 || std::atoi(argv[1]) == 0) {
 			if (!UnitTests())
 				return false;
 		} else if (std::atoi(argv[1]) == 1) {

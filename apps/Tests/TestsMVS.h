@@ -37,6 +37,9 @@
 
 namespace MVS {
 
+// CUDA-free coverage of the production per-image parameter transition.
+bool PatchMatchTopKLifecycleTest();
+
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
 bool MeshHalfMeshProcessingTest();

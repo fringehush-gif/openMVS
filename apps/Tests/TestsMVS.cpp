@@ -33,6 +33,7 @@
 #include "../../libs/MVS/SceneRefineCommon.h"
 #include "Tests.h"
 #include "TestsMVS.h"
+#include "../../libs/MVS/PatchMatchViewState.h"
 #include <halfmesh/RectPacking.h>
 
 
@@ -44,6 +45,30 @@
 DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
+
+bool PatchMatchTopKLifecycleTest()
+{
+	const int defaultTopK = 3;
+	ASSERT(defaultTopK > 0);
+	int reusedNumViews = 0;
+	int reusedTopK = defaultTopK;
+	// Exercise the shared production transition, without constructing a CUDA worker.
+	// Neighbor counts exclude the reference image. The middle image must not
+	// poison the next one: the old mutable minimum produced 3, 2, 2.
+	const int counts[] = {8, 2, 4, 4, 1, 1, 8, 3, 2, 4};
+	const int expected[] = {3, 2, 3, 3, 1, 1, 3, 3, 2, 3};
+	for (size_t i = 0; i < sizeof(counts)/sizeof(counts[0]); ++i) {
+		CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, reusedNumViews, reusedTopK);
+		int freshNumViews = 0;
+		int freshTopK = defaultTopK;
+		CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, freshNumViews, freshTopK);
+		if (reusedNumViews != counts[i] || reusedTopK != expected[i] ||
+			reusedNumViews != freshNumViews || reusedTopK != freshTopK)
+			return false;
+	}
+	VERBOSE("PatchMatchTopKLifecycleTest: reused and fresh host state agree");
+	return true;
+}
 
 bool MeshVertexColorsPLYTest()
 {

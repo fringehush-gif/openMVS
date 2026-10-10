@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "PatchMatchCUDA.h"
+#include "PatchMatchViewState.h"
 #include "DepthMap.h"
 #include "ConfidenceCUDA.h"
 
@@ -264,8 +265,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	ViewsMap lowResViewsMap;
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
-	params.nNumViews = (int)numImages-1;
-	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
+	SetPatchMatchViewCount((int)numImages-1, Params{}.nInitTopK, params.nNumViews, params.nInitTopK);
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
 	if (prevNumImages < numImages) {
