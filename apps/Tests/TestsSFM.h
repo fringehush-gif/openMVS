@@ -65,6 +65,10 @@ bool AlignToGPSDegenerateTest();
 // of the Unproject / TriangulateDLT path for spherical cameras.
 bool ReconstructSphericalSyntheticTest();
 
+// Sideways spherical/mixed bearings, camera-frame invariance, inlier refit and
+// ordinary pinhole control, using production triangulation and known geometry.
+bool TriangulateSphericalSidewaysTest();
+
 // Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
 // path on a full-sphere spherical scene. Validates RANSAC scoring with
 // cheirality disabled for spherical cameras, plus the Sampson-on-sphere

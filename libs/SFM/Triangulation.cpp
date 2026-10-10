@@ -145,6 +145,7 @@ unsigned SFM::TriangulateSkewLLS(
 		Point3::EVec Dt; // -D_cross * t
 	};
 	CLISTDEF0IDX(CameraData, uint32_t) cams(0, track.observations.size());
+	bool hasSphericalCamera = false;
 	FOREACH(obsIdx, track.observations) {
 		const Observation& obs = track.observations[obsIdx];
 		ASSERT(obs.imageID < images.size());
@@ -152,9 +153,11 @@ unsigned SFM::TriangulateSkewLLS(
 		ASSERT(img.HasCamera() && obs.featureID < img.keypoints.size());
 		if (!img.IsValid())
 			continue;
+		hasSphericalCamera |= img.pCamera->GetType() == CameraType::SPHERICAL;
 		// Ray direction in camera coordinates (unproject)
 		const cv::KeyPoint& kp = img.keypoints[obs.featureID];
 		const Point3 dir = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
+		ASSERT(ISFINITE(dir) && ABS(normSq(dir) - REAL(1)) < REAL(1e-6));
 		// Build DR and Dt
 		const Matrix3x3 Dcross(
 			0, -dir.z, dir.y,
@@ -169,16 +172,18 @@ unsigned SFM::TriangulateSkewLLS(
 	if (cams.size() < minInliers)
 		return 0;
 
-	// Build the system A * Pw = b (2*N x 3)
-	Eigen::MatrixXd A(2*cams.size(), 3);
-	Eigen::VectorXd bvec(2*cams.size());
+	// At d.z == 0 the first two skew rows are dependent. Spherical (including
+	// mixed) tracks need all three rows; unit bearings give squared ray distance.
+	// Keep the existing two-row weighting for entirely pinhole tracks.
+	const unsigned rowsPerCamera = hasSphericalCamera ? 3u : 2u;
+	Eigen::MatrixXd A(rowsPerCamera*cams.size(), 3);
+	Eigen::VectorXd bvec(rowsPerCamera*cams.size());
 	FOREACH(i, cams) {
 		const CameraData& cam = cams[i];
-		// Use the first two independent rows
-		A.row(2*i+0) = cam.DR.row(0);
-		bvec(2*i+0) = cam.Dt(0);
-		A.row(2*i+1) = cam.DR.row(1);
-		bvec(2*i+1) = cam.Dt(1);
+		for (unsigned row = 0; row < rowsPerCamera; ++row) {
+			A.row(rowsPerCamera*i+row) = cam.DR.row(row);
+			bvec(rowsPerCamera*i+row) = cam.Dt(row);
+		}
 	}
 	// Solve least-squares with SVD
 	track.position = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(bvec);
@@ -213,14 +218,14 @@ unsigned SFM::TriangulateSkewLLS(
 
 	// Refine using only inliers (now at positions 0..numInliers-1 of both arrays)
 	if (track.numInliers < cams.size()) {
-		Eigen::MatrixXd A2(2*track.numInliers, 3);
-		Eigen::VectorXd b2(2*track.numInliers);
+		Eigen::MatrixXd A2(rowsPerCamera*track.numInliers, 3);
+		Eigen::VectorXd b2(rowsPerCamera*track.numInliers);
 		for (uint32_t k = 0; k < (uint32_t)track.numInliers; ++k) {
 			const CameraData& cam = cams[k];
-			A2.row(2 * k + 0) = cam.DR.row(0);
-			b2(2 * k + 0) = cam.Dt(0);
-			A2.row(2 * k + 1) = cam.DR.row(1);
-			b2(2 * k + 1) = cam.Dt(1);
+			for (unsigned row = 0; row < rowsPerCamera; ++row) {
+				A2.row(rowsPerCamera*k+row) = cam.DR.row(row);
+				b2(rowsPerCamera*k+row) = cam.Dt(row);
+			}
 		}
 		track.position = A2.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b2);
 		ASSERT(ISFINITE(track.position));
