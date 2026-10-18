@@ -2135,6 +2135,40 @@ struct FusionCacheSetup {
 	}
 };
 
+// A reference can access its own map and any loaded neighbor, including during
+// recursive dense fusion. Retire these potential readers only after the reference ends.
+struct FusionMapReaders
+{
+	IIndexArr remainingReaders;
+	FusionMapReaders(const DepthDataArr& arrDepthData) :
+	    remainingReaders(arrDepthData.size())
+	{
+		remainingReaders.Memset(0);
+		FOREACH (idxImage, arrDepthData) {
+			const DepthData& depthData = arrDepthData[idxImage];
+			if (!depthData.IsValid())
+				continue;
+			++remainingReaders[idxImage];
+			for (const ViewScore& neighbor : depthData.neighbors) {
+				ASSERT(neighbor.ID < remainingReaders.size());
+				++remainingReaders[neighbor.ID];
+			}
+		}
+	}
+	template <typename MAPS>
+	void ReleaseMaps(const DepthData& depthData, IIndex idxImage, MAPS& maps)
+	{
+		const auto releaseMap = [&](IIndex idx) {
+			ASSERT(remainingReaders[idx] > 0);
+			if (--remainingReaders[idx] == 0)
+				maps[idx].release();
+		};
+		releaseMap(idxImage);
+		for (const ViewScore& neighbor : depthData.neighbors)
+			releaseMap(neighbor.ID);
+	}
+};
+
 // finds the best depth-map to fuse next that maximizes the number of neighbors already in cache
 std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataArr& arrDepthData, const DMapCache& cacheDMaps, const BoolArr& fusedDMaps, BoolArr& cachedMask, IIndexArr& countedByImage)
 {
@@ -2204,6 +2238,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	typedef TImage<cuint32_t> DepthIndex;
 	typedef cList<DepthIndex> DepthIndexArr;
 	DepthIndexArr arrDepthIdx(arrDepthData.size());
+	FusionMapReaders mapReaders(arrDepthData);
 	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
 	ProjsArr projs(0, nPointsEstimate);
 	pointcloud.points.reserve(nPointsEstimate);
@@ -2240,6 +2275,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		if (depthData.IsEmpty()) {
 			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
+			mapReaders.ReleaseMaps(depthData, idxImage, arrDepthIdx);
 			continue;
 		}
 		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
@@ -2389,6 +2425,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			}
 		}
 		fusedDMaps[idxImage] = true;
+		mapReaders.ReleaseMaps(depthData, idxImage, arrDepthIdx);
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size() && pointcloud.points.size() == projs.size());
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
@@ -2457,6 +2494,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
 	size_t nDepths(0);
 	UseMaskArr arrUseMask(arrDepthData.size());
+	FusionMapReaders mapReaders(arrDepthData);
 	// read once: hand the pixels of a cluster the keep-rule drops back to the pool, so that a later
 	// seed or probe can use what a doomed cluster would otherwise lock away for good; with it off
 	// no member is recorded and every site below is dead
@@ -2625,6 +2663,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		if (depthData.IsEmpty()) {
 			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
+			mapReaders.ReleaseMaps(depthData, idxImage, arrUseMask);
 			continue;
 		}
 		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
@@ -2748,6 +2787,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			}
 		}
 		fusedDMaps[idxImage] = true;
+		mapReaders.ReleaseMaps(depthData, idxImage, arrUseMask);
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size());
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size() - 1, pointcloud.points.size() - nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
