@@ -161,19 +161,19 @@ bool TextureScoringContractTest() {
 		TextureScoring::Eligible(0,false,mask,fixture.image,fixture.faceMap.size()) ||
 		TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size())!=precisionEligible) return fail("CPU/default/duplicate/full mask eligibility");
 #if defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
-  {
-    struct RestoreMXCSR {
-      unsigned saved=_mm_getcsr();
-      ~RestoreMXCSR() { _mm_setcsr(saved); }
-    } restore;
-    for (unsigned controls : {0x8000u,0x0040u,0x2000u,0x4000u,0x6000u}) {
-      const unsigned state=(restore.saved & ~0xe040u) | controls;
-      _mm_setcsr(state);
-      if (TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size()) ||
-          (_mm_getcsr() & 0xe040u)!=(state & 0xe040u))
-        return fail("FTZ, DAZ or SIMD rounding eligibility changed caller state");
-    }
-  }
+	{
+		struct RestoreMXCSR {
+			unsigned saved=_mm_getcsr();
+			~RestoreMXCSR() { _mm_setcsr(saved); }
+		} restore;
+		for (unsigned controls : {0x8000u,0x0040u,0x2000u,0x4000u,0x6000u}) {
+			const unsigned state=(restore.saved & ~0xe040u) | controls;
+			_mm_setcsr(state);
+			if (TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size()) ||
+					(_mm_getcsr() & 0xe040u)!=(state & 0xe040u))
+				return fail("FTZ, DAZ or SIMD rounding eligibility changed caller state");
+		}
+	}
 #endif
 	mask(4,4)=0;
 	if (TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size())) return fail("partial mask must remain CPU before CUDA setup");

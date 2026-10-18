@@ -31,6 +31,7 @@
 
 #include "../../libs/SFM.h"
 #include "../../libs/MVS.h"
+#include "../../libs/MVS/TextureScoring.h"
 #include "../../libs/Math/LeastAbsoluteDeviationSolver.h"
 #include "../../libs/Math/ConfidenceInterval.h"
 #include "TestsMath.h"

@@ -45,8 +45,6 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
-MVS_API bool PoissonBlendingTest();
-MVS_API bool TexturePatchContainmentTest();
 
 // Forward declarations
 struct MVS_API DenseDepthMapData;

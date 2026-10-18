@@ -19,4 +19,4 @@ capacities are allocation budgets, not process RSS limits. Both caches are nativ
 implementations and can be configured independently.
 
 Validation: `DepthMapSnapshotCacheTest` covers snapshot ownership, eviction, load failures and
-concurrent misses. Current-baseline native and performance comparisons remain open.
+concurrent misses.
