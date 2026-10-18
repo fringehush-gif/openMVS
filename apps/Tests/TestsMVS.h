@@ -104,4 +104,6 @@ bool DepthMapSnapshotCacheTest();
 
 bool MeshAdjacencyBoundaryTest();
 
+bool TextureFaceIndexTest();
+
 } // namespace MVS

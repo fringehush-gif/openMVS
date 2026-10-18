@@ -121,6 +121,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshAdjacencyBoundaryTest failed!");
 		return false;
 	}
+	if (!MVS::TextureFaceIndexTest()) {
+		VERBOSE("ERROR: TextureFaceIndexTest failed!");
+		return false;
+	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;

@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "TextureFaceIndex.h"
 #include <halfmesh/RectPacking.h>
 #include <halfmesh/Util/Raster.h>
 // connected components
@@ -818,14 +819,13 @@ void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceData
 {
 	const float ratioAngleToQuality(0.67f);
 	const float cosMaxNormalDeviation(COS(D2R(thMaxNormalDeviation)));
-	Mesh::FaceIdxArr remainingFaces(faces.size());
-	std::iota(remainingFaces.begin(), remainingFaces.end(), 0);
+	RemainingFaceIndex remainingIndex(faces.size());
 	std::vector<bool> selectedFaces(faces.size(), false);
 	cQueue<FIndex, FIndex, 0> currentVirtualFaceQueue;
 	std::unordered_set<FIndex> queuedFaces;
 	do {
-		const FIndex startPos = RAND() % remainingFaces.size();
-		const FIndex virtualFaceCenterFaceID = remainingFaces[startPos];
+		const FIndex startPos = RAND() % remainingIndex.GetSize();
+		const FIndex virtualFaceCenterFaceID = remainingIndex.Select(startPos);
 		ASSERT(currentVirtualFaceQueue.IsEmpty());
 		const Normal& normalCenter = scene.mesh.faceNormals[virtualFaceCenterFaceID];
 		const FaceDataArr& centerFaceDatas = facesDatas[virtualFaceCenterFaceID];
@@ -835,9 +835,7 @@ void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceData
 		if (centerFaceDatas.empty()) {
 			virtualFace.emplace_back(virtualFaceCenterFaceID);
 			selectedFaces[virtualFaceCenterFaceID] = true;
-			const auto posToErase = remainingFaces.FindFirst(virtualFaceCenterFaceID);
-			ASSERT(posToErase != Mesh::FaceIdxArr::NO_INDEX);
-			remainingFaces.RemoveAtMove(posToErase);
+			remainingIndex.Remove(virtualFaceCenterFaceID);
 		} else {
 			const IIndexArr selectedCams = SelectBestView(centerFaceDatas, virtualFaceCenterFaceID, minCommonCameras, ratioAngleToQuality);
 			currentVirtualFaceQueue.AddTail(virtualFaceCenterFaceID);
@@ -857,9 +855,8 @@ void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceData
 					continue;
 				// remove it from remaining faces and add it to the virtual face
 				{
-					const auto posToErase = remainingFaces.FindFirst(currentFaceId);
-					ASSERT(posToErase != Mesh::FaceIdxArr::NO_INDEX);
-					remainingFaces.RemoveAtMove(posToErase);
+					ASSERT(!selectedFaces[currentFaceId]);
+					remainingIndex.Remove(currentFaceId);
 					selectedFaces[currentFaceId] = true;
 					virtualFace.push_back(currentFaceId);
 				}
@@ -907,7 +904,7 @@ void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceData
 		}
 		virtualFacesDatas.emplace_back(std::move(virtualFaceDatas));
 		virtualFaces.emplace_back(std::move(virtualFace));
-	} while (!remainingFaces.empty());
+	} while (remainingIndex.GetSize() != 0);
 }
 
 #if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_MEDIAN

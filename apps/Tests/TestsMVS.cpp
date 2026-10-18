@@ -44,6 +44,8 @@
 #include <cstring>
 #include <filesystem>
 #include <thread>
+#include "../../libs/MVS/TextureFaceIndex.h"
+#include <random>
 #include <halfmesh/RectPacking.h>
 
 
@@ -4074,6 +4076,31 @@ bool MeshAdjacencyBoundaryTest()
 		}
 	}
 	return cases == 24;
+}
+
+bool TextureFaceIndexTest()
+{
+	for (unsigned seed = 0; seed < 128; ++seed) {
+		std::mt19937 random(seed);
+		const unsigned count(1 + seed * 7);
+		Mesh::FaceIdxArr reference(count);
+		std::iota(reference.begin(), reference.end(), 0);
+		RemainingFaceIndex index(count);
+		while (!reference.empty()) {
+			const size_t rank(random() % reference.size());
+			const Mesh::FIndex face(reference[rank]);
+			if (index.GetSize() != reference.size() || index.Select(rank) != face)
+				return false;
+			index.Remove(face);
+			reference.RemoveAtMove(rank);
+			for (size_t i = 0; i < reference.size(); i += 1 + seed % 13)
+				if (index.Select(i) != reference[i])
+					return false;
+		}
+		if (index.GetSize() != 0)
+			return false;
+	}
+	return RemainingFaceIndex(0).GetSize() == 0;
 }
 
 } // namespace MVS
