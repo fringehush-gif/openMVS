@@ -517,8 +517,7 @@ void MeshRefine::ListVertexFacesPre()
 }
 void MeshRefine::ListVertexFacesPost()
 {
-	scene.mesh.ListIncidentVertices();
-	scene.mesh.ListBoundaryVertices();
+	scene.mesh.ListIncidentVerticesAndBoundary();
 }
 
 // extract array of faces viewed by each image

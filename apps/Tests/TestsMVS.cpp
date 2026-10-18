@@ -3987,4 +3987,93 @@ bool DepthMapSnapshotCacheTest()
 }
 
 
+bool MeshAdjacencyBoundaryTest()
+{
+	const auto initVertices = [](Mesh& mesh, unsigned count) {
+		mesh.vertices.resize(count);
+		FOREACH (idx, mesh.vertices)
+			mesh.vertices[idx] = Mesh::Vertex(float(idx), float(idx % 7), 0.f);
+	};
+	unsigned cases(0);
+	const auto check = [&cases](Mesh& mesh) {
+		mesh.ListIncidentFaces();
+		mesh.ListIncidentVertices();
+		mesh.ListBoundaryVertices();
+		const Mesh::VertexVerticesArr neighbors(mesh.vertexVertices);
+		const BoolArr boundary(mesh.vertexBoundary);
+		mesh.ListIncidentVerticesAndBoundary();
+		FOREACH (idx, mesh.vertices) {
+			if (boundary[idx] != mesh.vertexBoundary[idx] || neighbors[idx].size() != mesh.vertexVertices[idx].size())
+				return false;
+			FOREACH (neighbor, neighbors[idx])
+				if (neighbors[idx][neighbor] != mesh.vertexVertices[idx][neighbor])
+					return false;
+		}
+		++cases;
+		return true;
+	};
+	{
+		Mesh mesh;
+		if (!check(mesh))
+			return false;
+		initVertices(mesh, 5);
+		if (!check(mesh))
+			return false;
+		mesh.faces.emplace_back(0, 1, 2);
+		if (!check(mesh))
+			return false;
+		mesh.faces.emplace_back(0, 1, 2);
+		if (!check(mesh))
+			return false;
+	}
+	{
+		Mesh mesh;
+		initVertices(mesh, 4);
+		mesh.faces.emplace_back(0, 1, 2);
+		mesh.faces.emplace_back(0, 3, 1);
+		mesh.faces.emplace_back(0, 2, 3);
+		mesh.faces.emplace_back(1, 3, 2);
+		if (!check(mesh))
+			return false;
+	}
+	{
+		Mesh mesh;
+		initVertices(mesh, 4);
+		mesh.faces.emplace_back(0, 0, 1);
+		mesh.faces.emplace_back(2, 2, 2);
+		if (!check(mesh))
+			return false;
+	}
+	// Both sides of the local-counter limit and a large hash-backed ring.
+	for (unsigned ring : {3u, 8u, 31u, 32u, 33u, 64u, 1024u}) {
+		Mesh mesh;
+		initVertices(mesh, ring + 2);
+		for (unsigned idx = 0; idx < ring; ++idx)
+			mesh.faces.emplace_back(0, idx + 1, (idx + 1) % ring + 1);
+		if (!check(mesh))
+			return false;
+		mesh.faces.pop_back();
+		if (!check(mesh))
+			return false;
+	}
+	{
+		constexpr unsigned GRID_SIZE = 41;
+		Mesh mesh;
+		initVertices(mesh, GRID_SIZE * GRID_SIZE);
+		for (unsigned y = 0; y < GRID_SIZE - 1; ++y)
+			for (unsigned x = 0; x < GRID_SIZE - 1; ++x) {
+				const unsigned idx(y * GRID_SIZE + x);
+				mesh.faces.emplace_back(idx, idx + 1, idx + GRID_SIZE);
+				mesh.faces.emplace_back(idx + 1, idx + GRID_SIZE + 1, idx + GRID_SIZE);
+			}
+		std::mt19937 random(0x71831);
+		for (unsigned pass = 0; pass < 4; ++pass) {
+			std::shuffle(mesh.faces.begin(), mesh.faces.end(), random);
+			if (!check(mesh))
+				return false;
+		}
+	}
+	return cases == 24;
+}
+
 } // namespace MVS

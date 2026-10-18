@@ -102,4 +102,6 @@ bool SelectNeighborViewsScaleTest();
 // Test immutable snapshot metadata, generation, admission/eviction and concurrent reads.
 bool DepthMapSnapshotCacheTest();
 
+bool MeshAdjacencyBoundaryTest();
+
 } // namespace MVS

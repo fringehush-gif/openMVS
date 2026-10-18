@@ -268,6 +268,81 @@ void Mesh::ListIncidentFaceFaces()
 	}
 }
 
+// construct ordered vertex adjacency and boundary flags from incident faces
+void Mesh::ListIncidentVerticesAndBoundary()
+{
+	ASSERT(vertexFaces.size() == vertices.size());
+	constexpr size_t MAX_LOCAL_FACES = 32;
+	struct Counter
+	{
+		Mesh::VIndex vertex;
+		unsigned count;
+	};
+	Counter counters[MAX_LOCAL_FACES * 2];
+	vertexVertices.clear();
+	vertexVertices.resize(vertices.size());
+	vertexBoundary.clear();
+	vertexBoundary.resize(vertices.size());
+	vertexBoundary.Memset(0);
+	Mesh::VertCountMap mapVerts;
+	mapVerts.reserve(12 * 2);
+	FOREACH (idxV, vertices) {
+		const Mesh::FaceIdxArr& vf = vertexFaces[idxV];
+		Mesh::VertexIdxArr& adjacent = vertexVertices[idxV];
+		size_t count(0);
+		FOREACHPTR (pFaceIdx, vf) {
+			const Mesh::Face& face = faces[*pFaceIdx];
+			int corner(0);
+			while (corner < 3 && face[corner] != idxV)
+				++corner;
+			ASSERT(corner < 3);
+			// The first occurrence supplies both other corners in the same cyclic order
+			// as ListIncidentVertices. Repeated center corners add no new neighbor IDs.
+			for (int offset = 1; offset < 3; ++offset) {
+				const Mesh::VIndex vertex(face[(corner + offset) % 3]);
+				if (vf.size() <= MAX_LOCAL_FACES) {
+					size_t slot(0);
+					while (slot < count && counters[slot].vertex != vertex)
+						++slot;
+					if (slot == count) {
+						ASSERT(count < MAX_LOCAL_FACES * 2);
+						counters[count++] = {vertex, 0};
+						adjacent.emplace_back(vertex);
+					}
+					if (vertex != idxV)
+						++counters[slot].count;
+				} else {
+					if (adjacent.Find(vertex) == Mesh::VertexIdxArr::NO_INDEX)
+						adjacent.emplace_back(vertex);
+					if (vertex != idxV)
+						++mapVerts[vertex].count;
+				}
+			}
+		}
+		if (vf.size() <= MAX_LOCAL_FACES) {
+			for (size_t slot = 0; slot < count; ++slot) {
+				if (counters[slot].vertex == idxV)
+					continue;
+				ASSERT(counters[slot].count == 1 || counters[slot].count == 2);
+				if (counters[slot].count != 2) {
+					vertexBoundary[idxV] = true;
+					break;
+				}
+			}
+		} else {
+			for (const auto& vc : mapVerts) {
+				ASSERT(vc.second.count == 1 || vc.second.count == 2);
+				if (vc.second.count != 2) {
+					vertexBoundary[idxV] = true;
+					break;
+				}
+			}
+			mapVerts.clear();
+		}
+	}
+}
+/*----------------------------------------------------------------*/
+
 // check each vertex if it is at the boundary or not
 // (make sure you called ListIncidentFaces() before)
 void Mesh::ListBoundaryVertices()

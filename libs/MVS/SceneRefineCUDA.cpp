@@ -537,8 +537,7 @@ void MeshRefineCUDA::ListVertexFacesPre()
 }
 void MeshRefineCUDA::ListVertexFacesPost()
 {
-	scene.mesh.ListIncidentVertices();
-	scene.mesh.ListBoundaryVertices();
+	scene.mesh.ListIncidentVerticesAndBoundary();
 	ASSERT(!scene.mesh.vertices.IsEmpty() && scene.mesh.vertices.GetSize() == scene.mesh.vertexVertices.GetSize());
 	// flatten the adjacent vertices of each vertex, with the TRUE valence of every vertex
 	// (boundary or not) plus a separate boundary flag: kernelComputeSmoothnessGradient zeroes a

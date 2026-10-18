@@ -175,6 +175,8 @@ public:
 	Vertex GetCenter() const;
 
 	void ListIncidentVertices();
+	// requires ListIncidentFaces(); preserves ListIncidentVertices order
+	void ListIncidentVerticesAndBoundary();
 	void ListIncidentFaces();
 	void ListIncidentFaceFaces();
 	void ListBoundaryVertices();

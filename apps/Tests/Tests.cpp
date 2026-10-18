@@ -117,6 +117,10 @@ bool UnitTests()
 		VERBOSE("ERROR: ImageCachePrefetchFailureTest failed!");
 		return false;
 	}
+	if (!MVS::MeshAdjacencyBoundaryTest()) {
+		VERBOSE("ERROR: MeshAdjacencyBoundaryTest failed!");
+		return false;
+	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;
