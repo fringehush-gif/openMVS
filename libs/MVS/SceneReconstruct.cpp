@@ -399,6 +399,11 @@ struct intersection_t {
 // Check if a segment (p, q) is coplanar with edges of a triangle (a, b, c):
 //  coplanar [in,out] : pointer to the 3 int array of indices of the edges coplanar with pq
 // return number of entries in coplanar
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("-ffp-contract=off")
+#endif
+
 inline int checkEdges(const point_t& a, const point_t& b, const point_t& c, const point_t& p, const point_t& q, int coplanar[3])
 {
 	int nCoplanar(0);
@@ -483,6 +488,10 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 	ASSERT("should not happen" == NULL);
 	return -1;
 }
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 // Find which facet is intersected by the segment (seg) and return next facets to check:
 //  in_facets [in] : vector of facets to check
