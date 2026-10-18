@@ -2136,8 +2136,16 @@ struct FusionCacheSetup {
 };
 
 // finds the best depth-map to fuse next that maximizes the number of neighbors already in cache
-std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataArr& arrDepthData, const DMapCache& cacheDMaps, const BoolArr& fusedDMaps) {
-	const IIndexArr cachedImages = cacheDMaps.GetCachedImageIndices(true);
+std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataArr& arrDepthData, const DMapCache& cacheDMaps, const BoolArr& fusedDMaps, BoolArr& cachedMask, IIndexArr& countedByImage)
+{
+	const IIndexArr cachedImages = cacheDMaps.GetCachedImageIndices(false);
+	ASSERT(cachedMask.size() == arrDepthData.size() && countedByImage.size() == arrDepthData.size());
+	cachedMask.Memset(0);
+	countedByImage.Memset(0xFF);
+	for (IIndex cached : cachedImages) {
+		ASSERT(cached < cachedMask.size());
+		cachedMask[cached] = true;
+	}
 	IIndex bestImageIdx = NO_ID;
 	unsigned bestImageScore = 0, bestImageSize = std::numeric_limits<unsigned>::max();
 	FOREACH(idxImage, arrDepthData) {
@@ -2147,19 +2155,18 @@ std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataA
 		if (fusedDMaps[idxImage])
 			continue;
 		ASSERT(!depthData.neighbors.empty());
-		IIndexArr cachedNeighbors;
+		unsigned numCachedNeighbors(0);
 		if (!cachedImages.empty()) {
-			IIndexArr neighbors(0, depthData.neighbors.size());
-			for (ViewScore& neighbor: depthData.neighbors)
-				neighbors.push_back(neighbor.ID);
-			neighbors.Sort();
-			std::set_intersection(neighbors.begin(), neighbors.end(),
-				cachedImages.begin(), cachedImages.end(),
-				std::back_inserter(cachedNeighbors));
+			for (const ViewScore& neighbor : depthData.neighbors) {
+				ASSERT(neighbor.ID < cachedMask.size());
+				if (cachedMask[neighbor.ID] && countedByImage[neighbor.ID] != idxImage) {
+					countedByImage[neighbor.ID] = idxImage;
+					++numCachedNeighbors;
+				}
+			}
 		}
-		if (bestImageScore < cachedNeighbors.size() ||
-			(bestImageScore == cachedNeighbors.size() && bestImageSize > depthData.neighbors.size())) {
-			bestImageScore = cachedNeighbors.size();
+		if (bestImageScore < numCachedNeighbors || (bestImageScore == numCachedNeighbors && bestImageSize > depthData.neighbors.size())) {
+			bestImageScore = numCachedNeighbors;
 			bestImageSize = depthData.neighbors.size();
 			bestImageIdx = idxImage;
 		}
@@ -2212,6 +2219,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	Util::Progress progress(_T("Fused depth-maps"), arrDepthData.size());
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
+	BoolArr cachedMask(arrDepthData.size());
+	IIndexArr countedByImage(arrDepthData.size());
 	fusedDMaps.Memset(0);
 	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
@@ -2220,7 +2229,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	for (; numDMapsFused < arrDepthData.size(); ++numDMapsFused) {
 		TD_TIMER_STARTD();
 		// find the best depth-map to fuse next as the one with the most neighbors already in cache
-		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps);
+		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps, cachedMask, countedByImage);
 		if (idxImage == NO_ID)
 			break; // no more depth-maps to fuse (only invalid depth-maps left)
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
@@ -2466,6 +2475,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	Util::Progress progress(_T("Dense fused depth-maps"), arrDepthData.size());
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
+	BoolArr cachedMask(arrDepthData.size());
+	IIndexArr countedByImage(arrDepthData.size());
 	fusedDMaps.Memset(0);
 	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
@@ -2602,7 +2613,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	while (true) {
 		TD_TIMER_STARTD();
 		// find the best depth-map to fuse next as the one with the most neighbors already in cache
-		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps);
+		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps, cachedMask, countedByImage);
 		if (idxImage == NO_ID)
 			break; // no more depth-maps to fuse (only invalid depth-maps left)
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
