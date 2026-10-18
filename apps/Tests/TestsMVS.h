@@ -37,6 +37,11 @@
 
 namespace MVS {
 
+// Production-bound current texture-count oracle and deterministic allocation lifecycle.
+bool TextureScoringContractTest();
+// Explicit opt-in device fixture. Fails in non-CUDA builds or unavailable-device runs.
+bool TextureScoringCUDATest(int requestedDevice=-1);
+
 // Missing/truncated and oversized depth-map inputs exercise joined fusion admission.
 bool DMapCacheLoadFailureTest();
 

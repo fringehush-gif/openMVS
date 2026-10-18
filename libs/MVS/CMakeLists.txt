@@ -26,6 +26,13 @@ FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 if(_USE_CUDA)
 	FILE(GLOB LIBRARY_FILES_CUDA "*.cu")
+	# Only the current texture scorer has an exact non-contracted float contract.
+	if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+		set_source_files_properties(TextureCUDA.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--ftz=false")
+	elseif(CMAKE_CUDA_COMPILER_ID STREQUAL "Clang")
+		set_source_files_properties(TextureCUDA.cu PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+	endif()
+	set_source_files_properties(TextureCUDA.cu PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 	LIST(APPEND LIBRARY_FILES_C ${LIBRARY_FILES_CUDA})
 	FILE(GLOB CUDA_LIBRARY_FILES_C "CUDA/*.cpp")
 	FILE(GLOB CUDA_LIBRARY_FILES_H "CUDA/*.h" "CUDA/*.inl")
@@ -110,8 +117,13 @@ if(_USE_BOOST_PYTHON)
 endif()
 
 # Install
+# The scorer/oracle are private implementation headers, not installed APIs.
+set(MVS_PUBLIC_HEADERS ${LIBRARY_FILES_H})
+list(REMOVE_ITEM MVS_PUBLIC_HEADERS
+  "${CMAKE_CURRENT_SOURCE_DIR}/TextureScoring.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/TextureCUDA.h")
 SET_TARGET_PROPERTIES(MVS PROPERTIES
-	PUBLIC_HEADER "${LIBRARY_FILES_H}")
+	PUBLIC_HEADER "${MVS_PUBLIC_HEADERS}")
 INSTALL(TARGETS MVS
 	EXPORT OpenMVSTargets
 	LIBRARY DESTINATION "${INSTALL_LIB_DIR}"

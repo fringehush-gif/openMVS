@@ -33,6 +33,7 @@
 #include "Scene.h"
 #include "TextureFaceIndex.h"
 #include "TextureSeamIndex.h"
+#include "TextureScoring.h"
 #include <halfmesh/RectPacking.h>
 #include <halfmesh/Util/Raster.h>
 // connected components
@@ -167,42 +168,8 @@ enum Mask {
 
 struct MeshTexture {
 	// used to render the surface to a view camera
-	typedef TImage<cuint32_t> FaceMap;
-	struct RasterMesh : TRasterMesh<RasterMesh> {
-		typedef TRasterMesh<RasterMesh> Base;
-		FaceMap& faceMap;
-		FIndex idxFace;
-		Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
-		bool validFace;
-		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
-		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
-
-		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap, const cv::Size& imageSize)
-			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap),
-			scaleMaskX((float)imageSize.width / _faceMap.cols), scaleMaskY((float)imageSize.height / _faceMap.rows),
-			border(CEIL2INT(3.f / MINF(scaleMaskX, scaleMaskY)) - 1) {}
-		inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
-			return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder(t.pti[v] = camera.TransformPointC2I(t.ptc[v]), border);
-		}
-		inline void Clear() {
-			Base::Clear();
-			faceMap.memset((uint8_t)NO_ID);
-		}
-		uint32_t* projArea = nullptr; // when set, counts every pixel the face covers, occluded or not
-		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
-			if (projArea)
-				++*projArea;
-			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
-			const Depth z(ComputeDepth(t, pbary));
-			ASSERT(z > Depth(0));
-			Depth& depth = depthMap(pt);
-			if (depth == 0 || depth > z) {
-				depth = z;
-				faceMap(pt) = validFace && (validFace = (mask.empty() || mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
-			}
-		}
-	};
+	using FaceMap = TextureScoring::FaceMap;
+	using RasterMesh = TextureScoring::RasterMesh;
 
 	// used to represent a pixel color
 	typedef Point3f Color;
@@ -401,7 +368,7 @@ public:
 
 	void ListVertexFaces();
 
-	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& views);
+	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& views, int optionalGpu=-2);
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
@@ -410,7 +377,7 @@ public:
 	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras=2, float thMaxNormalDeviation=25.f) const;
 	IIndexArr SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float ratioAngleToQuality) const;
 
-	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views);
+	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views, int optionalGpu=-2);
 
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -557,9 +524,18 @@ void MeshTexture::ListVertexFaces()
 }
 
 // extract array of faces viewed by each image
-bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& _views)
+bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& _views, int optionalGpu)
 {
-	// create faces octree
+  ASSERT(optionalGpu>=-2);
+  // Repeated explicit views keep the accepted CPU behavior and caller order.
+  const bool uniqueViews=optionalGpu==-2 || TextureScoring::UniqueExplicitViews(_views);
+  #ifndef _USE_CUDA
+  if (optionalGpu!=-2) {
+    VERBOSE("CUDA texture scoring requested in a build without CUDA");
+    return false;
+  }
+  #endif
+  // create faces octree
 	Mesh::Octree octree;
 	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
 
@@ -628,54 +604,50 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(highResSize);
 		depthMap.create(highResSize);
 		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap, imageData.image.size());
-		RasterMesh::Triangle triangle;
-		RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 		rasterer.mask = ComputeValidityMask(imageData, nIgnoreMaskLabel);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (nIgnoreMaskLabel == -1 && VERBOSITY_LEVEL > 3)
 			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
 		#endif
-		rasterer.Clear();
-		CLISTDEF0IDX(uint32_t,FIndex) projAreas(faces.size());
-		projAreas.Memset(0);
-		for (FIndex idxFace : cameraFaces) {
-			rasterer.validFace = true;
-			const Face& facet = faces[idxFace];
-			rasterer.idxFace = idxFace;
-			rasterer.projArea = &projAreas[idxFace];
-			rasterer.Project(facet, triangleRasterizer);
-			rasterer.projArea = nullptr;
-			if (!rasterer.validFace)
-				rasterer.Project(facet, triangleRasterizer);
-		}
-		// count the visible pixels of each face (and sum their colors) in this thread; only the faces
-		// the view sees are then appended to the shared face-data, inside the critical section. The
-		// face quality in a view is the number of its pixels the view sees: the resolution the texture
-		// gets from it, which already falls with the distance and the viewing angle
-		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.size());
-		areas.Memset(0);
-		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-		CLISTDEF0IDX(Color,FIndex) colors(faces.size()); // read only where areas > 0
-		#endif
-		const float scaleWeightX((float)imageData.width / highResSize.width);
-		const float scaleWeightY((float)imageData.height / highResSize.height);
-		for (int j=0; j<faceMap.rows; ++j) {
-			for (int i=0; i<faceMap.cols; ++i) {
-				const FIndex& idxFace = faceMap(j,i);
-				ASSERT(idxFace == NO_ID || depthMap(j,i) > 0);
-				if (idxFace == NO_ID)
-					continue;
-				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-				const Color color(imageData.image((int)(j*scaleWeightY),(int)(i*scaleWeightX)));
-				if (areas[idxFace]++ == 0)
-					colors[idxFace] = color;
-				else
-					colors[idxFace] += color;
-				#else
-				++areas[idxFace];
-				#endif
-			}
-		}
+    TextureScoring::Counts projAreas(faces.size()), areas(faces.size());
+    projAreas.Memset(0); areas.Memset(0);
+    TextureScoring::Colors colors;
+    #if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+    constexpr bool collectColor=true;
+    colors.resize(faces.size());
+    #else
+    constexpr bool collectColor=false;
+    #endif
+    bool usedCUDA=false;
+    #ifdef _USE_CUDA
+    if (TextureScoring::Eligible(optionalGpu,uniqueViews,rasterer.mask,imageData.image,highResSize)) {
+      std::vector<MVS::CUDA::TextureTriangle> triangles;
+      if (TextureScoring::PrepareTriangles(rasterer,faces,cameraFaces,triangles)) {
+        std::vector<MVS::CUDA::TextureCount> counts;
+        MVS::CUDA::TextureTiming timing{};
+        if (!MVS::CUDA::RunTextureCUDA(highResSize.width,highResSize.height,
+            imageData.image.cols,imageData.image.rows,triangles,
+            collectColor ? imageData.image.ptr<unsigned char>() : nullptr,
+            counts,timing,nullptr,optionalGpu)) {
+          VERBOSE("CUDA texture operation failed; aborting texture stage after workers join");
+          #ifdef TEXOPT_USE_OPENMP
+          bAbort=true;
+          #pragma omp flush (bAbort)
+          ++progress;
+          continue;
+          #else
+          return false;
+          #endif
+        }
+        TextureScoring::ImportCounts<collectColor>(triangles,counts,projAreas,areas,colors);
+        usedCUDA=true;
+      }
+    }
+    #endif
+    if (!usedCUDA) {
+      TextureScoring::RasterCPU(rasterer,faces,cameraFaces,projAreas);
+      TextureScoring::FoldVisible<collectColor>(faceMap,depthMap,imageData.image,areas,colors);
+    }
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp critical
 		#endif
@@ -686,14 +658,12 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			areas[idxFace] = 0; // a face listed twice is appended once
 			FaceData& faceData = facesDatas[idxFace].emplace_back();
 			faceData.idxView = idxView;
-			faceData.quality = (float)visible;
+			faceData.quality = TextureScoring::Quality(visible,projAreas[idxFace]);
 			// a view that sees only part of a face would copy the occluder into the face's texture:
 			// below 90% of the face's projection (and more than a couple of pixels missing) it keeps
 			// a tenth of its quality, so it wins only where nothing sees the face whole
 			const uint32_t projected(projAreas[idxFace]);
 			ASSERT(visible <= projected);
-			if (visible < 0.9f*projected && projected-visible > 2)
-				faceData.quality *= 0.1f;
 			#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 			faceData.color = RGB2YCBCR(Color(colors[idxFace] * (1.f/(float)visible)));
 			#endif
@@ -1087,7 +1057,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views)
+bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views, int optionalGpu)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -1113,7 +1083,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 		// list all views for each face
 		FaceDataViewArr facesDatas; {
 			TD_TIMER_STARTD();
-			if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views))
+			if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views, optionalGpu))
 				return false;
 			DEBUG_EXTRA("	face-view data listed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
@@ -2694,12 +2664,21 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
 	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT)
 {
+	return TextureMesh(nResolutionLevel, nMinResolution, minCommonCameras, fOutlierThreshold, fRatioDataSmoothness,
+		bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, nIgnoreMaskLabel, maxTextureSize, views, bPoissonInteriorLDLT, -2);
+}
+
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
+	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
+	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT, int optionalGpu)
+{
+	ASSERT(!mesh.faces.empty() && !images.IsEmpty());
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
+		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views, optionalGpu))
 			return false;
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces, %u patches (%s)", mesh.faces.size(), texture.texturePatches.size(), TD_TIMER_GET_FMT().c_str());
 	}

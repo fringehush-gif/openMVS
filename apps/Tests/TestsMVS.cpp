@@ -48,6 +48,12 @@
 #include <random>
 #include "../../libs/MVS/TextureSeamIndex.h"
 #include <halfmesh/RectPacking.h>
+#include "../../libs/MVS/TextureScoring.h"
+#include <array>
+#include <new>
+#ifdef _USE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -58,6 +64,234 @@
 DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
+
+// In-memory fixtures invoke the exact production CPU raster/fold and CUDA adapter.
+// They do not load a reconstruction, benchmark copied math, or replace pipeline QA.
+namespace {
+struct TextureFixture {
+	Mesh mesh;
+	Camera camera{KMatrix::IDENTITY,RMatrix::IDENTITY,CMatrix::ZERO};
+	TextureScoring::FaceMap faceMap;
+	DepthMap depthMap;
+	Image8U3 image;
+	Mesh::FaceIdxArr order;
+	TextureScoring::Counts projected, visible;
+	TextureScoring::Colors colors;
+	explicit TextureFixture(cv::Size nativeSize, cv::Size workingSize, bool bright=false) {
+		ASSERT(nativeSize.width>=32 && nativeSize.height>=32 && workingSize.width>0 && workingSize.height>0);
+		faceMap.create(nativeSize); depthMap.create(nativeSize); image.create(workingSize);
+		for (int y=0;y<image.rows;++y) for (int x=0;x<image.cols;++x)
+			image(y,x)=bright ? Pixel8U(255,255,255) : Pixel8U(uint8_t(x*7+y),uint8_t(y*13+x),uint8_t(x*3+y*17));
+		const float w=float(nativeSize.width), h=float(nativeSize.height);
+		Add({Point2f(8,8),Point2f(8,h-8),Point2f(w-8,8)}, {5,5,5}); // face 0
+		Add({Point2f(8,8),Point2f(8,h-8),Point2f(w-8,8)}, {5,5,5}); // tie, face 1 first
+		Add({Point2f(8,8),Point2f(8,h/2),Point2f(w/2,8)}, {3,3,3}); // nearer occluder
+		Add({Point2f(8,8),Point2f(w-8,8),Point2f(8,h-8)}, {2,2,2}); // back winding
+		Add({Point2f(8,8),Point2f(8,8),Point2f(8,8)}, {2,2,2}); // degenerate
+		Add({Point2f(1,8),Point2f(1,h-8),Point2f(w-8,8)}, {2,2,2}); // working border rejection
+		Add({Point2f(8,8),Point2f(8,h-8),Point2f(w-8,8)}, {-1,-1,-1}); // behind camera
+		Add({Point2f(w-12,h-12),Point2f(w-12,h-8),Point2f(w-8,h-12)}, {1.25f,2.5f,4.75f}); // perspective
+		for (uint32_t f: {1u,0u,2u,1u,3u,4u,5u,6u,7u}) order.emplace_back(f);
+		projected.resize(mesh.faces.size()); visible.resize(mesh.faces.size()); colors.resize(mesh.faces.size());
+	}
+	void Add(const std::array<Point2f,3>& p, const std::array<float,3>& z) {
+		ASSERT(mesh.vertices.size()+3<NO_ID);
+		const auto base=mesh.vertices.size();
+		for (int i=0;i<3;++i) mesh.vertices.emplace_back(p[i].x*z[i],p[i].y*z[i],z[i]);
+		mesh.faces.emplace_back(base,base+1,base+2);
+	}
+	void CPU(const Image8U& mask=Image8U()) {
+		ASSERT(mask.empty() || mask.size()==image.size());
+		projected.Memset(0); visible.Memset(0);
+		TextureScoring::RasterMesh raster(mesh.vertices,camera,depthMap,faceMap,image.size());
+		raster.mask=mask;
+		TextureScoring::RasterCPU(raster,mesh.faces,order,projected);
+		TextureScoring::FoldVisible<true>(faceMap,depthMap,image,visible,colors);
+	}
+};
+bool TextureActivationFixture(bool legacyAPI, int optionalGpu, Mesh* output) {
+	ASSERT(optionalGpu>=-2);
+	const ScopedTempDir tmpDir(_T("TextureActivationFixture"));
+	if (!tmpDir.IsValid()) return false;
+	const String path(tmpDir(_T("view.png")));
+	Image8U3 pixels(48,64);
+	pixels.setTo(cv::Scalar(17,73,191));
+	if (!pixels.Save(path)) return false;
+	Scene scene;
+	Platform& platform=scene.platforms.emplace_back();
+	platform.cameras.emplace_back(ScaleK(KMatrix::IDENTITY,REAL(1)/Camera::GetNormalizationScale(64,48)),RMatrix::IDENTITY,CMatrix::ZERO);
+	Platform::Pose& pose=platform.poses.emplace_back();
+	pose.R=RMatrix::IDENTITY; pose.C=CMatrix::ZERO;
+	Image& image=scene.images.emplace_back();
+	image.platformID=image.cameraID=image.poseID=image.ID=0;
+	image.width=64; image.height=48; image.scale=1.f; image.name=path;
+	image.UpdateCamera(scene.platforms);
+	scene.nCalibratedImages=1;
+	scene.mesh.vertices={{40.f,40.f,5.f},{40.f,160.f,5.f},{240.f,40.f,5.f}};
+	scene.mesh.faces={{0,1,2}};
+	const bool result=legacyAPI ? scene.TextureMesh(0,32,0,0.f,0.1f,false,false,0,Pixel8U(17,31,43),0.f,-2,128,IIndexArr()) :
+		scene.TextureMesh(0,32,0,0.f,0.1f,false,false,0,Pixel8U(17,31,43),0.f,-2,128,IIndexArr(),false,optionalGpu);
+	if (result && output) *output=scene.mesh;
+	return result;
+}
+bool SameTextureFixture(const Mesh& a, const Mesh& b) {
+	ASSERT(!a.faces.empty() && !b.faces.empty());
+	if (a.faceTexcoords.size()!=b.faceTexcoords.size() || a.faceTexindices.size()!=b.faceTexindices.size() ||
+		a.texturesDiffuse.size()!=b.texturesDiffuse.size() ||
+		std::memcmp(a.faceTexcoords.data(),b.faceTexcoords.data(),a.faceTexcoords.GetDataSize()) ||
+		(a.faceTexindices.size() && std::memcmp(a.faceTexindices.data(),b.faceTexindices.data(),a.faceTexindices.GetDataSize()))) return false;
+	for (uint32_t i=0;i<a.texturesDiffuse.size();++i)
+		if (a.texturesDiffuse[i].size()!=b.texturesDiffuse[i].size() || cv::norm(a.texturesDiffuse[i],b.texturesDiffuse[i],cv::NORM_INF)!=0) return false;
+	return true;
+}
+}
+
+bool TextureScoringContractTest() {
+	const auto fail=[](const char* detail) { VERBOSE("ERROR: TextureScoringContractTest: %s",detail); return false; };
+	TextureFixture fixture(cv::Size(64,48),cv::Size(32,24));
+	fixture.CPU();
+	if (!fixture.projected[0] || fixture.projected[1]!=fixture.projected[0]*2 || fixture.visible[0]!=0 ||
+		!fixture.visible[1] || !fixture.visible[2] || fixture.projected[3] || fixture.projected[4] ||
+		fixture.projected[5] || fixture.projected[6]) return fail("coverage, duplicate traversal, tie, winding, border or behind-camera contract");
+	IIndexArr views; views.emplace_back(3); views.emplace_back(1); views.emplace_back(3);
+	if (TextureScoring::UniqueExplicitViews(views) || views[0]!=3 || views[1]!=1 || views[2]!=3) return fail("duplicate views or caller order mutation");
+	Image8U mask(fixture.image.size(),uint8_t(255));
+	const bool precisionEligible=TextureScoring::HostPrecisionEligible();
+	if (TextureScoring::Eligible(-2,true,mask,fixture.image,fixture.faceMap.size()) ||
+		TextureScoring::Eligible(0,false,mask,fixture.image,fixture.faceMap.size()) ||
+		TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size())!=precisionEligible) return fail("CPU/default/duplicate/full mask eligibility");
+#if defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+  {
+    struct RestoreMXCSR {
+      unsigned saved=_mm_getcsr();
+      ~RestoreMXCSR() { _mm_setcsr(saved); }
+    } restore;
+    for (unsigned controls : {0x8000u,0x0040u,0x2000u,0x4000u,0x6000u}) {
+      const unsigned state=(restore.saved & ~0xe040u) | controls;
+      _mm_setcsr(state);
+      if (TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size()) ||
+          (_mm_getcsr() & 0xe040u)!=(state & 0xe040u))
+        return fail("FTZ, DAZ or SIMD rounding eligibility changed caller state");
+    }
+  }
+#endif
+	mask(4,4)=0;
+	if (TextureScoring::Eligible(0,true,mask,fixture.image,fixture.faceMap.size())) return fail("partial mask must remain CPU before CUDA setup");
+	fixture.CPU(mask);
+	if (fixture.visible[1]!=0 || fixture.visible[2]!=0 || !fixture.projected[1]) return fail("stateful invalid-face second projection");
+	Image8U3 backing(24,33);
+	Image8U3 strided=backing(cv::Rect(0,0,32,24));
+	if (TextureScoring::Eligible(0,true,Image8U(),strided,fixture.faceMap.size())) return fail("strided layout eligibility");
+	if (TextureScoring::Quality(27,30)!=27.f || TextureScoring::Quality(26,30)!=26.f*0.1f ||
+		TextureScoring::Quality(7,9)!=7.f || TextureScoring::Quality(6,9)!=6.f*0.1f ||
+		TextureScoring::Quality(0,0)!=0.f) return fail("strict 90 percent and missing-two quality boundary");
+	// Compile-time binding retains each accepted TextureMesh overload, including
+	// the Poisson suffix. Source checks bind their default CPU forwarding.
+	using Legacy=bool (Scene::*)(unsigned,unsigned,unsigned,float,float,bool,bool,unsigned,Pixel8U,float,int,int,const IIndexArr&,bool);
+	using Current=bool (Scene::*)(unsigned,unsigned,unsigned,float,float,bool,bool,unsigned,Pixel8U,float,int,int,const IIndexArr&,bool,int);
+	const Legacy legacy=&Scene::TextureMesh;
+	const Current current=&Scene::TextureMesh;
+	(void)legacy; (void)current;
+	struct Allocator {
+		size_t calls=0, failAt=2, live=0;
+		bool Allocate(void** ptr,size_t bytes) {
+			ASSERT(ptr && bytes>0);
+			if (++calls==failAt) return false;
+			*ptr=::operator new(bytes,std::nothrow);
+			if (!*ptr) return false;
+			++live; return true;
+		}
+		bool Free(void* ptr) { ASSERT(ptr && live>0); ::operator delete(ptr); --live; return true; }
+	} allocator;
+	CUDA::detail::TextureStorage<Allocator> storage(allocator);
+	if (storage.Ensure(4,64,192) || storage.triangleCapacity!=0 || allocator.live!=1) { storage.Release(); return fail("group capacity valid after partial allocation failure"); }
+	allocator.failAt=0;
+	if (!storage.Ensure(4,64,192) || storage.triangleCapacity!=4 || allocator.live!=4) { storage.Release(); return fail("retry after partial allocation failure"); }
+	const auto calls=allocator.calls;
+	if (!storage.Ensure(2,32,96) || allocator.calls!=calls) { storage.Release(); return fail("same/smaller reuse reallocated"); }
+	storage.Release();
+	if (allocator.live || storage.triangleCapacity || storage.pixelCapacity || storage.colorCapacity) return fail("release invalidation");
+	int drains=0;
+	auto sync=[&]() { ++drains; };
+	{ CUDA::detail::TextureFailureDrain<decltype(sync)> failure(sync); }
+	{ CUDA::detail::TextureFailureDrain<decltype(sync)> success(sync); success.complete=true; }
+	if (drains!=1 || !CUDA::detail::TextureDeviceMatches(-1,0) ||
+		!CUDA::detail::TextureDeviceMatches(0,0) || CUDA::detail::TextureDeviceMatches(0,1)) return fail("failure drain/device lifetime");
+	Mesh legacyCPU,explicitCPU;
+	if (!TextureActivationFixture(true,-2,&legacyCPU) || !TextureActivationFixture(false,-2,&explicitCPU) ||
+		!SameTextureFixture(legacyCPU,explicitCPU)) return fail("public legacy/default versus explicit CPU atlas fixture");
+	#ifndef _USE_CUDA
+	if (TextureActivationFixture(false,0,nullptr)) return fail("explicit GPU accepted by non-CUDA public API");
+	#endif
+	return true;
+}
+
+bool TextureScoringCUDATest(int requestedDevice) {
+	ASSERT(requestedDevice>=-1);
+	if (!TextureScoringContractTest()) return false;
+	#ifndef _USE_CUDA
+	VERBOSE("ERROR: explicit CUDA texture fixture requires a CUDA build");
+	return false;
+	#else
+	const auto fail=[](const char* detail) { VERBOSE("ERROR: TextureScoringCUDATest: %s",detail); return false; };
+	int selected=-1;
+	if (!CUDA::SelectTextureCUDADevice(requestedDevice,selected)) return fail("requested CUDA device unavailable");
+	for (unsigned scenario=0;scenario<4;++scenario) {
+		const cv::Size nativeSize(scenario==3 ? cv::Size(512,512) : cv::Size(64,48));
+		const cv::Size workingSize(scenario==0 ? nativeSize : (scenario==3 ? cv::Size(256,256) : cv::Size(32,24)));
+		TextureFixture fixture(nativeSize,workingSize,scenario==3);
+		if (scenario==2) std::swap(fixture.order[0],fixture.order[1]); // invert exact-depth first ownership
+		fixture.CPU();
+		TextureScoring::RasterMesh raster(fixture.mesh.vertices,fixture.camera,fixture.depthMap,fixture.faceMap,fixture.image.size());
+		std::vector<CUDA::TextureTriangle> triangles;
+		if (!TextureScoring::PrepareTriangles(raster,fixture.mesh.faces,fixture.order,triangles)) return fail("fixture projection unexpectedly CPU-only");
+		for (bool withColor: {true,false}) {
+			std::vector<CUDA::TextureCount> counts;
+			CUDA::TextureTiming timing{};
+			std::vector<uint64_t> visibility;
+			int before=-1,after=-1;
+			if (cudaGetDevice(&before)!=cudaSuccess || !CUDA::RunTextureCUDA(nativeSize.width,nativeSize.height,
+				workingSize.width,workingSize.height,triangles,withColor?fixture.image.ptr<unsigned char>():nullptr,
+				counts,timing,&visibility,selected) || cudaGetDevice(&after)!=cudaSuccess || before!=after)
+				return fail("launch/drain/caller device restore");
+			TextureScoring::Counts projected(fixture.mesh.faces.size()),visible(fixture.mesh.faces.size());
+			TextureScoring::Colors colors(fixture.mesh.faces.size());
+			projected.Memset(0); visible.Memset(0);
+			if (withColor) TextureScoring::ImportCounts<true>(triangles,counts,projected,visible,colors);
+			else TextureScoring::ImportCounts<false>(triangles,counts,projected,visible,colors);
+			for (uint32_t face=0;face<fixture.mesh.faces.size();++face) {
+				if (projected[face]!=fixture.projected[face] || visible[face]!=fixture.visible[face]) return fail("projected/visible count oracle");
+				if (withColor && visible[face] && std::memcmp(colors[face].ptr(),fixture.colors[face].ptr(),3*sizeof(float))) return fail("ordered float32 BGR fold oracle");
+			}
+			for (int y=0;y<nativeSize.height;++y) for (int x=0;x<nativeSize.width;++x) {
+				const uint64_t key=visibility[size_t(y)*nativeSize.width+x];
+				const uint32_t rank=uint32_t(key);
+				if (rank!=UINT_MAX && rank>=fixture.order.size()) return fail("invalid GPU traversal rank");
+				const uint32_t face=rank==UINT_MAX ? NO_ID : fixture.order[rank];
+				uint32_t depthBits=0;
+				if (face!=NO_ID) std::memcpy(&depthBits,&fixture.depthMap(y,x),sizeof(float));
+				if (face!=fixture.faceMap(y,x) || (face!=NO_ID && uint32_t(key>>32)!=depthBits)) return fail("full pixel/depth/tie oracle");
+			}
+		}
+	}
+	// Changing the persistent workspace device must fail without freeing its state.
+	TextureFixture fixture(cv::Size(64,48),cv::Size(32,24));
+	TextureScoring::RasterMesh raster(fixture.mesh.vertices,fixture.camera,fixture.depthMap,fixture.faceMap,fixture.image.size());
+	std::vector<CUDA::TextureTriangle> triangles;
+	TextureScoring::PrepareTriangles(raster,fixture.mesh.faces,fixture.order,triangles);
+	std::vector<CUDA::TextureCount> counts;
+	CUDA::TextureTiming timing{};
+	if (CUDA::RunTextureCUDA(64,48,32,24,triangles,fixture.image.ptr<unsigned char>(),counts,timing,nullptr,selected+1)) return fail("workspace device switch accepted");
+	if (!CUDA::RunTextureCUDA(64,48,32,24,triangles,fixture.image.ptr<unsigned char>(),counts,timing,nullptr,selected)) return fail("workspace unusable after rejected device switch");
+	int unavailable=-1,deviceCount=0;
+	if (cudaGetDeviceCount(&deviceCount)!=cudaSuccess || CUDA::SelectTextureCUDADevice(deviceCount,unavailable)) return fail("explicit unavailable device accepted");
+	Mesh cpuAtlas,gpuAtlas;
+	if (!TextureActivationFixture(true,-2,&cpuAtlas) || !TextureActivationFixture(false,selected,&gpuAtlas) ||
+		!SameTextureFixture(cpuAtlas,gpuAtlas)) return fail("opt-in public API atlas fixture versus default CPU");
+	if (TextureActivationFixture(false,INT_MAX,nullptr)) return fail("unavailable explicit GPU accepted by public API");
+	return true;
+	#endif
+}
 
 bool FusionProjectionScratchTest()
 {

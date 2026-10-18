@@ -66,6 +66,8 @@ int nIgnoreMaskLabel;
 unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 bool bPoissonInteriorLDLT;
+bool bTextureCUDA;
+int nTextureGPU;
 int nExportPNGCompression;
 bool bExportPNGBuffered;
 int nProcessPriority;
@@ -128,6 +130,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("outlier-threshold", boost::program_options::value(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
 		("cost-smoothness-ratio", boost::program_options::value(&OPT::fRatioDataSmoothness)->default_value(0.1f), "ratio used to adjust the preference for more compact patches (1 - best quality/worst compactness, ~0 - worst quality/best compactness)")
+		("texture-cuda", boost::program_options::value(&OPT::bTextureCUDA)->default_value(false), "opt in to native-grid CUDA face scoring (unsupported masks/layouts use CPU)")
+		("cuda-device", boost::program_options::value(&OPT::nTextureGPU)->default_value(-1), "CUDA texture device: -2 CPU, -1 automatic, >=0 exact device (used only with texture-cuda)")
 		("virtual-face-images", boost::program_options::value(&OPT::minCommonCameras)->default_value(0), "generate texture patches using virtual faces composed of coplanar triangles sharing at least this number of views (0 - disabled, 3 - good value)")
 		("global-seam-leveling", boost::program_options::value(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
 		("local-seam-leveling", boost::program_options::value(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
@@ -216,6 +220,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		}
 	}
 
+  if (OPT::nTextureGPU < -2 || (OPT::bTextureCUDA && OPT::bVertexColors)) {
+    VERBOSE("error: CUDA texture scoring requires atlas generation and cuda-device >= -2");
+    return false;
+  }
 	if (OPT::nExportPNGCompression < 0 || OPT::nExportPNGCompression > 9) {
 		VERBOSE("error: PNG compression level must be in range [0..9]");
 		return false;
@@ -354,7 +362,7 @@ int main(int argc, LPCTSTR* argv)
 	} else {
 		if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
 							   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, Pixel8U(OPT::nColEmpty),
-							   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views, OPT::bPoissonInteriorLDLT))
+							   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views, OPT::bPoissonInteriorLDLT, OPT::bTextureCUDA ? OPT::nTextureGPU : -2))
 			return EXIT_FAILURE;
 		VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}

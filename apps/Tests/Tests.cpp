@@ -52,6 +52,10 @@ DEFINE_LOG_NAME(lt, _T("Test    "));
 bool UnitTests()
 {
 	TD_TIMER_START();
+	if (!MVS::TextureScoringContractTest()) {
+		VERBOSE("ERROR: TextureScoringContractTest failed!");
+		return false;
+	}
 	if (!MVS::PatchMatchTopKLifecycleTest()) {
 		VERBOSE("ERROR: PatchMatchTopKLifecycleTest failed!");
 		return false;
@@ -237,6 +241,10 @@ int main(int argc, LPCTSTR* argv)
 			return SFM::TriangulateSphericalSidewaysTest();
 		} else if (argc > 1 && String(argv[1]) == _T("patchmatch-topk")) {
 			return MVS::PatchMatchTopKLifecycleTest();
+		} else if (argc > 1 && String(argv[1]) == _T("texture-scoring")) {
+			return MVS::TextureScoringContractTest();
+		} else if (argc > 1 && String(argv[1]) == _T("texture-cuda")) {
+			return MVS::TextureScoringCUDATest(argc>3 ? std::atoi(argv[3]) : -1);
 		} else if (argc < 2 || std::atoi(argv[1]) == 0) {
 			if (!UnitTests())
 				return false;
