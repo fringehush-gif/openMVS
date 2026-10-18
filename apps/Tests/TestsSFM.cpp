@@ -1129,6 +1129,93 @@ void SimulateSubSceneReconstruction(
 /*----------------------------------------------------------------*/
 
 
+// Production triangulation must retain both constraints of a sideways bearing.
+// Ground truth is fixed independently of the solver; camera-frame rotations do
+// not change the physical rays or their intersection.
+bool TriangulateSphericalSidewaysTest()
+{
+	const Point3 pointGT(2, 0, 0);
+	const Matrix3x3 facePoint(0, 0, -1, 0, 1, 0, 1, 0, 0);
+	ASSERT(ABS(cv::determinant(facePoint) - REAL(1)) < REAL(1e-12));
+	struct TestCase {
+		const char* name;
+		bool sphericalFirst, sphericalSecond, rotateFrames, outlier, invalidSpherical;
+	};
+	const TestCase cases[] = {
+		{"sideways spherical", true, true, false, false, false},
+		{"rotated spherical", true, true, true, false, false},
+		{"ordinary pinhole", false, false, true, false, false},
+		{"mixed cameras", true, false, false, false, false},
+		{"sideways inlier refit", true, true, false, true, false},
+		{"pinhole with invalid spherical", false, false, true, false, true},
+	};
+	Point3 sidewaysPosition, pinholePosition;
+	for (const TestCase& test : cases) {
+		Scene scene;
+		Track track;
+		// The outlier's 100x pixel density makes its small angular disagreement
+		// exceed the same pixel gate while the two ordinary-resolution views stay
+		// inliers. Put it first to exercise the paired observation/camera swaps.
+		const unsigned numViews = test.outlier || test.invalidSpherical ? 3u : 2u;
+		for (unsigned v = 0; v < numViews; ++v) {
+			const bool outlier = test.outlier && v == 0;
+			const bool invalid = test.invalidSpherical && v == 2;
+			const unsigned goodView = test.outlier && !outlier ? v-1 : v;
+			const bool spherical = outlier || invalid || (goodView == 0 ? test.sphericalFirst : test.sphericalSecond);
+			const cv::Size size = outlier ? cv::Size(204800, 102400) : cv::Size(2048, 1024);
+			if (spherical)
+				scene.cameras.emplace_back(new SphericalCamera(size));
+			else
+				scene.cameras.emplace_back(new PinholeCamera(size, 800, 800, 1024, 512));
+			Pose3D pose;
+			pose.C = outlier ? Point3(0, -1, 0) : Point3(0, goodView, 0);
+			pose.R = test.rotateFrames || !spherical ? facePoint : Matrix3x3::IDENTITY;
+			scene.images.emplace_back(static_cast<IIndex>(v), String(), pose, v, scene.cameras[v]);
+			Image& image = scene.images[v];
+			const Point3 observedPoint = outlier ? Point3(pointGT + Point3(0, REAL(0.002), 0)) : pointGT;
+			const auto [pixel, valid] = image.ProjectPoint(observedPoint);
+			ASSERT(valid && Image8U::isInside(pixel, size));
+			if (!valid || !Image8U::isInside(pixel, size)) {
+				VERBOSE("TriangulateSphericalSidewaysTest FAILED: %s fixture projection", test.name);
+				return false;
+			}
+			image.keypoints.emplace_back(Cast<float>(pixel), 0.f, 0.f, 10.f);
+			if (invalid)
+				image.InvalidatePose();
+			track.observations.emplace_back(v, 0);
+		}
+		ASSERT(track.observations.size() == numViews);
+		const unsigned inliers = TriangulateSkewLLS(track, scene.images, 1.f, 2.f, 2);
+		const REAL error = norm(track.position - pointGT);
+		if (inliers != 2 || !ISFINITE(track.position) || error > REAL(1e-4)) {
+			VERBOSE("TriangulateSphericalSidewaysTest FAILED: %s, %u inliers, 3D error %.9g",
+				test.name, inliers, error);
+			return false;
+		}
+		if (test.outlier && (track.observations[0].imageID == 0 || track.observations[1].imageID == 0)) {
+			VERBOSE("TriangulateSphericalSidewaysTest FAILED: rejected observation survived the refit");
+			return false;
+		}
+		if (&test == &cases[0])
+			sidewaysPosition = track.position;
+		if (&test == &cases[2])
+			pinholePosition = track.position;
+		if (&test == &cases[1] && norm(track.position - sidewaysPosition) > REAL(1e-4)) {
+			VERBOSE("TriangulateSphericalSidewaysTest FAILED: camera-frame rotation changed recovered geometry");
+			return false;
+		}
+		if (test.invalidSpherical && track.position != pinholePosition) {
+			VERBOSE("TriangulateSphericalSidewaysTest FAILED: invalid spherical view changed pinhole solution");
+			return false;
+		}
+		VERBOSE("TriangulateSphericalSidewaysTest: %s, %u inliers, 3D error %.9g", test.name, inliers, error);
+	}
+	VERBOSE("TriangulateSphericalSidewaysTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // ===============================================================================
 // Spherical camera full-hemisphere reconstruction test
 // Exercises the triangulation + BA pipeline on a spherical scene where 3D points
