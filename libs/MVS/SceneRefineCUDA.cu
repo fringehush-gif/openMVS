@@ -609,11 +609,12 @@ __global__ void kernelComputeWindowStats(
 	// triple of the 22x22 tile they span is staged in shared memory once
 	constexpr int Block = 16;
 	constexpr int Tile = Block + 2*Refine::HalfSize;
-	__shared__ float sA[Tile*Tile], sB[Tile*Tile], sW[Tile*Tile];
+	__shared__ float2 sAB[Tile * Tile];
+	__shared__ float sW[Tile * Tile];
 	const int x0 = blockIdx.x * Block - Refine::HalfSize;
 	const int y0 = blockIdx.y * Block - Refine::HalfSize;
 	bool any = false; // this thread staged a masked sample
-	for (int i = threadIdx.y * Block + threadIdx.x; i < Tile*Tile; i += Block*Block) {
+	for (int i = threadIdx.y * Block + threadIdx.x; i < Tile * Tile; i += Block * Block) {
 		const int gx = x0 + i % Tile, gy = y0 + i / Tile;
 		float a(0.f), b(0.f), w(0.f);
 		// an invalid sample is staged as zeros: it contributes nothing to any of the six sums
@@ -623,7 +624,8 @@ __global__ void kernelComputeWindowStats(
 			w = 1.f;
 			any = true;
 		}
-		sA[i] = a; sB[i] = b; sW[i] = w;
+		sAB[i] = make_float2(a, b);
+		sW[i] = w;
 	}
 	// a tile without a single masked sample (most tiles, in a scene of many small views) writes
 	// its zeros and leaves; the vote is a barrier of its own, so the block leaves together
@@ -654,14 +656,20 @@ __global__ void kernelComputeWindowStats(
 				const int row = centre + dy*Tile;
 				for (int dx = -Refine::HalfSize; dx <= Refine::HalfSize; ++dx) {
 					const int t = row + dx;
-					const float a = sA[t], b = sB[t];
-					n += sW[t]; sumA += a; sumB += b; sumAA += a*a; sumBB += b*b; sumAB += a*b;
+					const float2 ab = sAB[t];
+					const float a = ab.x, b = ab.y;
+					n += sW[t];
+					sumA += a;
+					sumB += b;
+					sumAA += a * a;
+					sumBB += b * b;
+					sumAB += a * b;
 				}
 			}
 			Refine::WindowStats s;
 			if (Refine::WindowStatsFromSums(n, sumA, sumB, sumAA, sumBB, sumAB, gateMeanDiff, gateVarRatio, s)) {
 				float zn, dz, cf;
-				Refine::ZnccAndDerivative(s, n, sA[centre], sB[centre], zn, dz, cf);
+				Refine::ZnccAndDerivative(s, n, sAB[centre].x, sAB[centre].y, zn, dz, cf);
 				contribR = cf;
 				contribRZ = cf * (1.f - zn);
 				// mask==1 means the rasterizer covered this pixel, so faceMap holds the covering
