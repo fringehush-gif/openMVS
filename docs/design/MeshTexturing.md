@@ -63,7 +63,8 @@ patch, textured with `--empty-color`.
 - **Global seam leveling** (`GlobalSeamLeveling`, `--global-seam-leveling`): one additive YCbCr
   correction per (vertex, patch), solved in the least-squares sense so the two sides of every seam
   vertex agree (colours sampled along the seam edges), with a Tikhonov term (lambda 0.1) keeping the
-  corrections smooth inside a patch; conjugate gradient per channel; the correction is interpolated
+  corrections smooth inside a patch; each channel owns its conjugate-gradient solver and mutable
+  iteration state; the correction is interpolated
   over each patch's triangles.
 - **Local seam leveling** (`LocalSeamLeveling`, `--local-seam-leveling`): Poisson blending of a strip
   along each patch border so the border continues smoothly into the patch.

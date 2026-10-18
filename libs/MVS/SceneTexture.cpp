@@ -1610,16 +1610,16 @@ void MeshTexture::GlobalSeamLeveling()
 	// globally solve for the correction colors
 	Eigen::Matrix<float,Eigen::Dynamic,3,Eigen::RowMajor> colorAdjustments(rowsX, 3);
 	{
-		// init CG solver
-		Eigen::ConjugateGradient<SparseMat, Eigen::Lower> solver;
-		solver.setMaxIterations(1000);
-		solver.setTolerance(0.0001f);
-		solver.compute(Lhs);
-		ASSERT(solver.info() == Eigen::Success);
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp parallel for
 		#endif
 		for (int channel=0; channel<3; ++channel) {
+			// Each solve updates iteration/error state; keep the solver private to its channel.
+			Eigen::ConjugateGradient<SparseMat, Eigen::Lower> solver;
+			solver.setMaxIterations(1000);
+			solver.setTolerance(0.0001f);
+			solver.compute(Lhs);
+			ASSERT(solver.info() == Eigen::Success);
 			// init right hand side vector
 			const Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::Stride<0,3> > b(coeffB.front().ptr()+channel, rowsA);
 			const Eigen::VectorXf Rhs(SparseMat(A.transpose()) * b);
