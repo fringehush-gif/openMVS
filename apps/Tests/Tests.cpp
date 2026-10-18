@@ -137,6 +137,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;
 	}
+	if (!MVS::FusionProjectionScratchTest()) {
+		VERBOSE("ERROR: FusionProjectionScratchTest failed!");
+		return false;
+	}
 	if (!MVS::PLYCodecTest()) {
 		VERBOSE("ERROR: PLYCodecTest failed!");
 		return false;

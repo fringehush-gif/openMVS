@@ -127,6 +127,7 @@ public:
 	bool AdjustConfidenceCUDA(DepthData& depthDataRef);
 	#endif
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
+	// FuseDepthMaps requires an initially empty point-cloud (both overloads).
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	// Explicit non-waiting overloads are valid only after depth-map producers have joined.

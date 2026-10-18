@@ -59,6 +59,128 @@ DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
 
+bool FusionProjectionScratchTest()
+{
+	const auto fail = [](const char* detail) {
+		VERBOSE("ERROR: FusionProjectionScratchTest: %s", detail);
+		return false;
+	};
+	struct OptionsReset {
+		unsigned minViews{OPTDENSE::nMinViewsFuse};
+		unsigned maxViews{OPTDENSE::nMaxViewsFuse};
+		float depthThreshold{OPTDENSE::fDepthDiffThreshold};
+		float normalThreshold{OPTDENSE::fNormalDiffThreshold};
+		~OptionsReset() {
+			OPTDENSE::nMinViewsFuse = minViews;
+			OPTDENSE::nMaxViewsFuse = maxViews;
+			OPTDENSE::fDepthDiffThreshold = depthThreshold;
+			OPTDENSE::fNormalDiffThreshold = normalThreshold;
+		}
+	} optionsReset;
+	const cv::Size size(16, 12);
+	ASSERT(size.width > 0 && size.height > 0);
+	const Pixel8U color(64, 96, 128);
+	for (unsigned variant: {0u, 1u, 2u, 3u}) {
+		const unsigned count(variant < 2 ? 4u : 32u);
+		const bool waitForProducer((variant & 1) != 0);
+		for (unsigned flags = 0; flags < 4; ++flags) {
+			const bool normals((flags & 1) != 0), colors((flags & 2) != 0);
+			for (bool normalMaps: {false, true}) {
+				// The normals-on/missing-map path saves generated maps; keep this fixture in memory.
+				if (normals && !normalMaps)
+					continue;
+				for (unsigned scenario = 0; scenario < 3; ++scenario) {
+					if (scenario != 0 && count != 4)
+						continue;
+					OPTDENSE::nMinViewsFuse = scenario == 0 ? 2 : 3;
+					OPTDENSE::nMaxViewsFuse = count;
+					OPTDENSE::fDepthDiffThreshold = .05f;
+					OPTDENSE::fNormalDiffThreshold = 25.f;
+					Scene scene;
+					scene.images.resize(count);
+					for (IIndex i = 0; i < count; ++i) {
+						Image& image(scene.images[i]);
+						image.ID = i;
+						image.poseID = 0;
+						image.width = size.width;
+						image.height = size.height;
+						image.camera = Camera(Matrix3x3(16, 0, 8, 0, 16, 6, 0, 0, 1), Matrix3x3::IDENTITY, Point3::ZERO, true);
+						image.image.create(size);
+						image.image.setTo(cv::Scalar(color.c0, color.c1, color.c2));
+					}
+					DepthMapsData maps(scene);
+					double weightedDepth(0), totalWeight(0);
+					for (IIndex i = 0; i < count; ++i) {
+						DepthData& depth(maps.arrDepthData[i]);
+						depth.images.resize(1);
+						depth.images[0].pImageData = &scene.images[i];
+						depth.images[0].camera = scene.images[i].camera;
+						depth.size = size;
+						depth.dMin = 1;
+						depth.dMax = 3;
+						// Scenario 1 rejects the first seed, then accepts all views from the middle depth.
+						// Scenario 2 leaves two unsupported groups and must produce no points.
+						const float z(scenario == 1 ? (i == 0 ? 2.f : i == 1 ? 2.08f : 2.16f)
+							: scenario == 2 && i % 2 ? 2.2f : 2.f);
+						depth.depthMap.create(size);
+						depth.depthMap.setTo(z);
+						if (normalMaps) {
+							depth.normalMap.create(size);
+							depth.normalMap.setTo(cv::Scalar(0, 0, -1));
+						}
+						// Equal raw confidence gives inverse-square depth weights; the common scale cancels.
+						weightedDepth += 1. / z;
+						totalWeight += 1. / (double(z) * z);
+						// Reverse neighbors exercise sorted view/projection insertion, not just appends.
+						for (IIndex j = count; j-- > 0;) {
+							if (j == i)
+								continue;
+							ViewScore neighbor{};
+							neighbor.ID = j;
+							neighbor.score = 1;
+							depth.neighbors.push_back(neighbor);
+							scene.images[i].neighbors.push_back(neighbor);
+						}
+					}
+					// All maps are resident and no producers are running. Cover the legacy
+					// waiting wrapper and the joined-producer overload used by reconstruction.
+					if (waitForProducer)
+						maps.FuseDepthMaps(scene.pointcloud, colors, normals);
+					else
+						maps.FuseDepthMaps(scene.pointcloud, colors, normals, false);
+					const PointCloud& cloud(scene.pointcloud);
+					const size_t expected(scenario == 2 ? 0 : size.area());
+					if (cloud.points.size() != expected || cloud.pointViews.size() != expected ||
+						cloud.pointWeights.size() != expected || cloud.normals.size() != (normals ? expected : 0) ||
+						cloud.colors.size() != (colors ? expected : 0))
+						return fail("point/property counts differ");
+					const double z(weightedDepth / totalWeight);
+					for (size_t p = 0; p < expected; ++p) {
+						// Identical identity-pose cameras and uniform planes give an analytic world point.
+						const Point3f point(float((double(p % size.width) - 8.) * z / 16.),
+							float((double(p / size.width) - 6.) * z / 16.), float(z));
+						if (!ISFINITE(cloud.points[p]) || norm(cloud.points[p] - point) > 1e-5f)
+							return fail("fused point differs from the analytic plane");
+						if (cloud.pointViews[p].size() != count || cloud.pointWeights[p].size() != count)
+							return fail("contributor count differs");
+						for (IIndex v = 0; v < count; ++v)
+							if (cloud.pointViews[p][v] != v || cloud.pointWeights[p][v] != 1.f)
+								return fail("view/weight insertion differs");
+						if (normals && norm(cloud.normals[p] - Normal(0, 0, -1)) > 1e-6f)
+							return fail("normal accumulation differs");
+						if (colors) {
+							for (unsigned c = 0; c < 3; ++c)
+								if (std::abs(int(cloud.colors[p].c[c]) - int(color.c[c])) > (scenario == 1 ? 1 : 0))
+									return fail("color accumulation differs");
+						}
+					}
+				}
+			}
+		}
+	}
+	return true;
+}
+
 bool PatchMatchTopKLifecycleTest()
 {
 	const int defaultTopK = 3;

@@ -47,6 +47,8 @@ bool PatchMatchTopKLifecycleTest();
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
+// test fusion rollback, contributor ordering and reused projection scratch on synthetic maps
+bool FusionProjectionScratchTest();
 // test the PLY codec: exact binary/ascii round trips, big-endian input, skipped data, malformed files
 bool PLYCodecTest();
 bool MeshHalfMeshProcessingTest();

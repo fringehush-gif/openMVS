@@ -2256,6 +2256,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal, bool waitForProducer)
 {
 	TD_TIMER_STARTD();
+	ASSERT(pointcloud.IsEmpty());
 
 	struct Proj {
 		union {
@@ -2270,7 +2271,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		inline ImageRef GetCoord() const { return ImageRef(x,y); }
 	};
 	typedef SEACAVE::cList<Proj,const Proj&,0,4,uint32_t> ProjArr;
-	typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
 
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
@@ -2282,7 +2282,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	DepthIndexArr arrDepthIdx(arrDepthData.size());
 	FusionMapReaders mapReaders(arrDepthData);
 	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
-	ProjsArr projs(0, nPointsEstimate);
+	ProjArr pointProjs; // rollback coordinates for the current candidate; capacity is reused
 	pointcloud.points.reserve(nPointsEstimate);
 	pointcloud.pointViews.reserve(nPointsEstimate);
 	pointcloud.pointWeights.reserve(nPointsEstimate);
@@ -2382,7 +2382,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
 				weights.emplace_back(conf);
 				REAL confidence(Conf2Weight(conf,depth));
-				ProjArr& pointProjs = projs.emplace_back();
+				pointProjs.clear();
 				pointProjs.emplace_back(Proj(x));
 				const PointCloud::Normal normal(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageData.camera.R.t() * Cast<REAL>(depthData.normalMap(x))) : Normal(0, 0, -1));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
@@ -2448,7 +2448,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 						ASSERT(arrDepthIdx[idxImageB].isInside(x) && arrDepthIdx[idxImageB](x).idx != NO_ID);
 						arrDepthIdx[idxImageB](x).idx = NO_ID;
 					}
-					projs.pop_back();
 					pointcloud.pointWeights.pop_back();
 					pointcloud.pointViews.pop_back();
 					pointcloud.points.pop_back();
@@ -2469,7 +2468,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		}
 		fusedDMaps[idxImage] = true;
 		mapReaders.ReleaseMaps(depthData, idxImage, arrDepthIdx);
-		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size() && pointcloud.points.size() == projs.size());
+		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size());
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
@@ -2487,32 +2486,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,
 		static_cast<double>(totalNumImagesInCache) / numDMapsFused, TD_TIMER_GET_FMT().c_str());
 
-	if (bEstimateNormal && !pointcloud.points.empty() && pointcloud.normals.empty()) {
-		// estimate normal also if requested (quite expensive if normal-maps not available)
-		TD_TIMER_STARTD();
-		pointcloud.normals.resize(pointcloud.points.size());
-		const int64_t nPoints((int64_t)pointcloud.points.size());
-		#ifdef DENSE_USE_OPENMP
-		#pragma omp parallel for
-		#endif
-		for (int64_t i=0; i<nPoints; ++i) {
-			PointCloud::WeightArr& weights = pointcloud.pointWeights[i];
-			ASSERT(!weights.empty());
-			IIndex idxView(0);
-			float bestWeight = weights.front();
-			for (IIndex idx=1; idx<weights.size(); ++idx) {
-				const PointCloud::Weight& weight = weights[idx];
-				if (bestWeight < weight) {
-					bestWeight = weight;
-					idxView = idx;
-				}
-			}
-			const DepthData& depthData(arrDepthData[pointcloud.pointViews[i][idxView]]);
-			ASSERT(depthData.IsValid() && !depthData.IsEmpty());
-			depthData.GetNormal(projs[i][idxView].GetCoord(), pointcloud.normals[i]);
-		}
-		DEBUG_EXTRA("Normals estimated for the dense point-cloud: %u normals (%s)", pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
-	}
+	// Every accepted point appends its normal above when normal estimation is requested.
+	ASSERT(!bEstimateNormal || pointcloud.normals.size() == pointcloud.points.size());
 } // FuseDepthMaps
 
 
