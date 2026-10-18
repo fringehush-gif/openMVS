@@ -1208,6 +1208,8 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 								for (FIndex idxFace : virtualFaces[f]) {
 									for (int i=0; i<3; ++i) {
 										const FIndex neighborFace = faceFaces[idxFace][i];
+										if (neighborFace == NO_ID)
+											continue;
 										if (mapFaceToVirtualFace[neighborFace] == fAdj) {
 											// this edge is shared with virtual face fAdj
 											const VIndex v0 = faces[idxFace][i];
