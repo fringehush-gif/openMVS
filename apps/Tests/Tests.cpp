@@ -129,6 +129,10 @@ bool UnitTests()
 		VERBOSE("ERROR: TextureSeamIndexTest failed!");
 		return false;
 	}
+	if (!MVS::PoissonBlendingTest()) {
+		VERBOSE("ERROR: PoissonBlendingTest failed!");
+		return false;
+	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;

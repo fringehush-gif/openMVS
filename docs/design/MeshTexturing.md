@@ -108,6 +108,7 @@ faces around it; images are released as soon as their faces are consumed.
 | `--cost-smoothness-ratio` | 0.1 | data vs. smoothness balance of the labeling |
 | `--virtual-face-images` | 0 | label virtual faces of coplanar triangles (0 disables) |
 | `--global-seam-leveling` / `--local-seam-leveling` | 1 / 1 | seam colour leveling |
+| `--poisson-interior-ldlt` | false | interior-only factorization with prescribed border colors; floating-point results can change |
 | `--texture-size-multiple` | 0 | page size multiple (0 = power of two) |
 | `--max-texture-size` | 8192 | page size cap; more pages when exceeded |
 | `--empty-color` | 0x00FF7F27 | colour of faces no view sees |

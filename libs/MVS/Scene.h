@@ -45,6 +45,7 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+MVS_API bool PoissonBlendingTest();
 
 // Forward declarations
 struct MVS_API DenseDepthMapData;
@@ -249,6 +250,10 @@ public:
 	bool RefineMeshEnergyProbe(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, RefineEnergyProbe& probe);
 
 	// Mesh texturing
+
+	// Optional local seam solver; the existing overload keeps this disabled.
+	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
+		bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int ignoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT);
 	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras=0, float fOutlierThreshold=0.f, float fRatioDataSmoothness=0.3f,
 		bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true, unsigned nTextureSizeMultiple=0, Pixel8U colEmpty=Pixel8U(255,127,39),
 		float fSharpnessWeight=0.f, int ignoreMaskLabel=-1, int maxTextureSize=0, const IIndexArr& views=IIndexArr());

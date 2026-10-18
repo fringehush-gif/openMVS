@@ -414,8 +414,8 @@ public:
 
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
-	void LocalSeamLeveling();
-	bool GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize);
+	void LocalSeamLeveling(bool bPoissonInteriorLDLT);
+	bool GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize, bool bPoissonInteriorLDLT);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -442,6 +442,7 @@ public:
 protected:
 	static void ProcessMask(Image8U& mask, int stripWidth);
 	static void PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias=1.f);
+	static void PoissonBlendingInteriorLDLT(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias=1.f);
 
 
 public:
@@ -1972,7 +1973,173 @@ void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Im
 	}
 }
 
-void MeshTexture::LocalSeamLeveling()
+void MeshTexture::PoissonBlendingInteriorLDLT(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias)
+{
+	ASSERT(src.width() == mask.width() && src.width() == dst.width());
+	ASSERT(src.height() == mask.height() && src.height() == dst.height());
+	ASSERT(src.channels() == 3 && dst.channels() == 3 && mask.channels() == 1);
+	ASSERT(src.type() == CV_32FC3 && dst.type() == CV_32FC3 && mask.type() == CV_8U);
+
+	#ifndef _RELEASE
+	// check the mask border has no pixels marked as interior
+	for (int x=0; x<mask.cols; ++x)
+		ASSERT(mask(0,x) != interior && mask(mask.rows-1,x) != interior);
+	for (int y=0; y<mask.rows; ++y)
+		ASSERT(mask(y,0) != interior && mask(y,mask.cols-1) != interior);
+	#endif
+
+	const int n(dst.area());
+	const int width(dst.width());
+
+	// Eliminate fixed Dirichlet pixels; reuse the ordinary raster-order mapping.
+	TImage<MatIdx> indices(dst.size());
+	indices.memset(0xff);
+	MatIdx nnz(0);
+	for (int i=0; i<n; ++i)
+		if (mask(i) == interior)
+			indices(i) = nnz++;
+	if (nnz <= 0)
+		return; // Border-only patches already have their prescribed colors.
+
+	Colors coeffB(nnz);
+	CLISTDEF0(MatEntry) coeffA(0, nnz);
+	for (int i=0; i<n; ++i) {
+		if (mask(i) != interior)
+			continue;
+		const MatIdx idx(indices(i));
+		coeffA.emplace_back(idx, idx, 4.f);
+		Color rhs((bias == 1.f ? ColorLaplacian(src,i) :
+			ColorLaplacian(src,i)*bias + ColorLaplacian(dst,i)*(1.f-bias))*(-1.f));
+		const int adjacent[] = {i-width, i-1, i+1, i+width};
+		for (const int neighbor: adjacent) {
+			if (mask(neighbor) == interior) {
+				// Raster-order up/left neighbors are the lower triangle; avoid right/down index loads.
+				if (neighbor < i)
+					coeffA.emplace_back(idx, indices(neighbor), -1.f);
+			} else {
+				ASSERT(mask(neighbor) == border);
+				rhs += (const Color&)dst(neighbor);
+			}
+		}
+		coeffB[idx] = rhs;
+	}
+
+	SparseMat A(nnz, nnz);
+	A.setFromTriplets(coeffA.Begin(), coeffA.End());
+	coeffA.Release();
+	// Existing finite-mask/four-neighbor contracts anchor every interior component.
+	const Eigen::SimplicialLDLT<SparseMat, Eigen::Lower> solver(A);
+	ASSERT(solver.info() == Eigen::Success);
+	for (int channel=0; channel<3; ++channel) {
+		const Eigen::Map<Eigen::VectorXf, Eigen::Unaligned, Eigen::Stride<0,3>> b(coeffB.front().ptr()+channel, nnz);
+		const Eigen::VectorXf x(solver.solve(b));
+		ASSERT(solver.info() == Eigen::Success);
+		for (int i=0; i<n; ++i) {
+			const MatIdx index(indices(i));
+			if (index != -1)
+				dst(i)[channel] = x[index];
+		}
+	}
+}
+
+bool MVS::PoissonBlendingTest()
+{
+	// Reach the production static method without constructing a texture scene.
+	struct Probe : MeshTexture { using MeshTexture::PoissonBlending; using MeshTexture::PoissonBlendingInteriorLDLT; };
+	const int width = 11, height = 9;
+	unsigned cases = 0;
+	// LDLT preserves prescribed pixels bit-exactly; legacy LU may round boundary rows.
+	for (const bool bInteriorLDLT : {false, true}) {
+	for (int shape = 0; shape < 6; ++shape) {
+		for (const float bias : {0.f, .35f, 1.f}) {
+			Image8U mask(cv::Size(width, height));
+			mask.memset(empty);
+			// Empty, border-only, single pixel, rectangle, disconnected, and holed.
+			if (shape == 1)
+				mask(4,5) = border;
+			for (int y = 1; y < height-1; ++y) {
+				for (int x = 1; x < width-1; ++x) {
+					const bool inside = shape == 2 ? x == 5 && y == 4 :
+						shape == 3 || shape == 5 ? x >= 2 && x <= 8 && y >= 2 && y <= 6 &&
+							(shape != 5 || x != 5 || y != 4) :
+						shape == 4 ? (x >= 2 && x <= 3 && y >= 2 && y <= 3) ||
+							(x >= 7 && x <= 8 && y >= 5 && y <= 6) : false;
+					if (inside)
+						mask(y,x) = interior;
+				}
+			}
+			for (int y = 1; y < height-1; ++y) {
+				for (int x = 1; x < width-1; ++x) {
+					if (mask(y,x) != interior)
+						continue;
+					for (const cv::Point offset : {cv::Point(0,-1), cv::Point(-1,0), cv::Point(1,0), cv::Point(0,1)})
+						if (mask(y+offset.y,x+offset.x) == empty)
+							mask(y+offset.y,x+offset.x) = border;
+				}
+			}
+			Image32F3 src(cv::Size(width, height)), dst(cv::Size(width, height));
+			const auto affine = [](int x, int y, int channel) {
+				ASSERT(x >= 0 && y >= 0 && channel >= 0 && channel < 3);
+				return .02f + .001f*x - .002f*y + .003f*channel;
+			};
+			for (int y = 0; y < height; ++y) {
+				for (int x = 0; x < width; ++x) {
+					for (int channel = 0; channel < 3; ++channel) {
+						src(y,x)[channel] = .08f + .001f*x*x + .002f*y*y + .01f*channel;
+						dst(y,x)[channel] = mask(y,x) == interior ?
+							.13f + .02f*((3*x+5*y+channel)%7) : src(y,x)[channel] + affine(x,y,channel);
+					}
+				}
+			}
+			Image32F3 before;
+			dst.copyTo(before);
+			if (bInteriorLDLT)
+				Probe::PoissonBlendingInteriorLDLT(src, dst, mask, bias);
+			else
+				Probe::PoissonBlending(src, dst, mask, bias);
+			for (int y = 0; y < height; ++y) {
+				for (int x = 0; x < width; ++x) {
+					if (mask(y,x) != interior) {
+						if (bInteriorLDLT && std::memcmp(&dst(y,x), &before(y,x), sizeof(Pixel32F)) != 0) {
+							VERBOSE("PoissonBlendingTest: prescribed pixel changed (shape %d, bias %g)", shape, bias);
+							return false;
+						}
+						if (!bInteriorLDLT)
+							for (int channel=0; channel<3; ++channel)
+								if (!std::isfinite(dst(y,x)[channel]) || std::abs(dst(y,x)[channel]-before(y,x)[channel]) > 1e-5f)
+									return false;
+						continue;
+					}
+					ASSERT(x > 0 && x < width-1 && y > 0 && y < height-1);
+					for (int channel = 0; channel < 3; ++channel) {
+						// The affine extension has zero Laplacian and agrees with every
+						// prescribed boundary, giving an independent closed-form solution.
+						const double expected = (1.-bias)*before(y,x)[channel] +
+							bias*(src(y,x)[channel]+affine(x,y,channel));
+						const auto laplacian = [&](const Image32F3& image) {
+							ASSERT(image.size() == src.size());
+							return double(image(y-1,x)[channel]) + image(y,x-1)[channel] +
+								image(y,x+1)[channel] + image(y+1,x)[channel] - 4.*image(y,x)[channel];
+						};
+						const double residual = laplacian(dst) - bias*laplacian(src) - (1.-bias)*laplacian(before);
+						if (!std::isfinite(dst(y,x)[channel]) || std::abs(dst(y,x)[channel]-expected) > 1e-5 ||
+							std::abs(residual) > 1e-5) {
+							VERBOSE("PoissonBlendingTest: solution mismatch (shape %d, bias %g, pixel %d/%d, channel %d)",
+								shape, bias, x, y, channel);
+							return false;
+						}
+					}
+				}
+			}
+			++cases;
+		}
+	}
+	}
+	VERBOSE("PoissonBlendingTest: %u Dirichlet solver fixtures passed", cases);
+	return true;
+}
+
+void MeshTexture::LocalSeamLeveling(bool bPoissonInteriorLDLT)
 {
 	ASSERT(!seamVertices.empty());
 	const unsigned numPatches(texturePatches.size()-1);
@@ -2081,7 +2248,10 @@ void MeshTexture::LocalSeamLeveling()
 		// keep only the exterior tripe of the given size
 		ProcessMask(mask, 20);
 		// compute texture patch blending
-		PoissonBlending(imageOrg, image, mask);
+		if (bPoissonInteriorLDLT)
+			PoissonBlendingInteriorLDLT(imageOrg, image, mask);
+		else
+			PoissonBlending(imageOrg, image, mask);
 		// apply color correction to the patch image
 		cv::Mat imagePatch(image0(texturePatch.rect));
 		for (int r=0; r<image.rows; ++r) {
@@ -2229,7 +2399,7 @@ static void SplitPatchesSpatially(
 }
 #endif
 
-bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize)
+bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize, bool bPoissonInteriorLDLT)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -2298,7 +2468,7 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		// perform local seam leveling
 		if (bLocalSeamLeveling) {
 			TD_TIMER_STARTD();
-			LocalSeamLeveling();
+			LocalSeamLeveling(bPoissonInteriorLDLT);
 			DEBUG_ULTIMATE("\tlocal seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
 	}
@@ -2516,6 +2686,14 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
 	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views)
 {
+	return TextureMesh(nResolutionLevel, nMinResolution, minCommonCameras, fOutlierThreshold, fRatioDataSmoothness,
+		bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, nIgnoreMaskLabel, maxTextureSize, views, false);
+}
+
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
+	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
+	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT)
+{
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
@@ -2529,7 +2707,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
-		if (!texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, maxTextureSize))
+		if (!texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, maxTextureSize, bPoissonInteriorLDLT))
 			return false;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		size_t patchPixels(0), texturePixels(0);
