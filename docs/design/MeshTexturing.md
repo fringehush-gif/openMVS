@@ -30,7 +30,9 @@ For every view (in parallel, one view per thread):
    where nothing sees the face whole.
 5. With `--outlier-threshold` > 0 the mean colour of the face in each view is kept and
    `FaceOutlierDetection` (Gaussian clamping in YCbCr) removes views whose colour disagrees with the
-   others (e.g. a passer-by in one image).
+   others (e.g. a passer-by in one image). With OpenMP enabled, independent face lists are filtered in
+   parallel after the view workers finish; other builds filter serially. Observation order
+   within each face is preserved.
 
 ### 2.2 View selection (`MeshTexture::FaceViewSelection`)
 

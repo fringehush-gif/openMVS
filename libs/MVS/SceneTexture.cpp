@@ -707,8 +707,11 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	if (fOutlierThreshold > 0) {
 		// try to detect outlier views for each face
 		// (views for which the face is occluded by a dynamic object in the scene, ex. pedestrians)
-		for (FaceDataArr& faceDatas: facesDatas)
-			FaceOutlierDetection(faceDatas, fOutlierThreshold);
+		#ifdef TEXOPT_USE_OPENMP
+		#pragma omp parallel for schedule(dynamic, 128)
+		#endif
+		for (int_t idx = 0; idx < (int_t)facesDatas.size(); ++idx)
+			FaceOutlierDetection(facesDatas[(FIndex)idx], fOutlierThreshold);
 	}
 	#endif
 	return true;
