@@ -6,6 +6,8 @@ if(CGAL_FOUND)
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
 FIND_PACKAGE(halfmesh CONFIG REQUIRED)
+# Keep selected HalfMesh headers ahead of generic dependency prefixes.
+SET_PROPERTY(TARGET halfmesh::halfmesh PROPERTY IMPORTED_NO_SYSTEM TRUE)
 # PointCloud.cpp includes <tiny_gltf.h> directly (halfmesh owns the only
 # TINYGLTF_IMPLEMENTATION in the build, this side is declarations only), and
 # vcpkg's tinygltf ships no CMake config, so locate the header by name.
