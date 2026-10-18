@@ -410,6 +410,20 @@ __device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const Ima
 			costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], g_cameras[0], g_cameras[imgId+1], plane, p);
 	}
 }
+// Only consumed view scores; retain the original photo-then-geometry evaluation order.
+template <bool GEOM>
+__device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector, const unsigned* viewWeights)
+{
+	const int nNumViews = g_params.nNumViews;
+	for (int imgId = 1; imgId <= nNumViews; ++imgId)
+		if (viewWeights[imgId-1])
+			costVector[imgId-1] = ScorePlane(cache, g_cameras[0], images[imgId], g_cameras[imgId], p, plane, lowDepth);
+	if (GEOM) {
+		for (int imgId = 0; imgId < nNumViews; ++imgId)
+			if (viewWeights[imgId])
+				costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], g_cameras[0], g_cameras[imgId+1], plane, p);
+	}
+}
 // same as above, but interpolate the plane to current pixel position
 template <bool GEOM>
 __device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector)
@@ -575,7 +589,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		finalCosts[posId] = valid[posId] ? AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews) : FLT_MAX;
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
-	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector);
+	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector, viewWeights);
 	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 	if (finalCosts[minCostIdx] < cost) {
 		ASSERT(valid[minCostIdx]);
@@ -611,7 +625,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		Point4 newPlane;
 		newPlane.topLeftCorner<3,1>() = normals[i];
 		newPlane.w() = depths[i];
-		MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, newPlane, lowDepth, costVector);
+		MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, newPlane, lowDepth, costVector, viewWeights);
 		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 		if (cost > costPlane) {
 			cost = costPlane;
