@@ -213,6 +213,40 @@ struct MeshTexture {
 			&& a.y+a.height <= b.y+b.height;
 	}
 
+	static void MergeContainedPatches(TexturePatchArr& texturePatches, Mesh::TexCoordArr& faceTexcoords) {
+		ASSERT(!texturePatches.empty() && texturePatches.back().label == NO_ID
+			&& std::all_of(texturePatches.begin(), texturePatches.end()-1,
+				[](const TexturePatch& patch) { return patch.label != NO_ID; }));
+		ASSERT(faceTexcoords.size() % 3 == 0);
+		// merge texture patches with overlapping rectangles
+		for (unsigned i=0; i<texturePatches.size()-1; ++i) {
+			for (unsigned j=1; j<texturePatches.size(); ++j) {
+				if (i == j)
+					continue;
+				TexturePatch& texturePatchBig = texturePatches[i];
+				TexturePatch& texturePatchSmall = texturePatches[j];
+				if (texturePatchBig.label != texturePatchSmall.label)
+					continue;
+				if (!IsContainedIn(texturePatchSmall.rect, texturePatchBig.rect))
+					continue;
+				// translate texture coordinates
+				const TexCoord offset(texturePatchSmall.rect.tl()-texturePatchBig.rect.tl());
+				for (const FIndex idxFace: texturePatchSmall.faces) {
+					ASSERT(size_t(idxFace) < faceTexcoords.size()/3);
+					TexCoord* texcoords = faceTexcoords.data()+size_t(idxFace)*3;
+					for (int v=0; v<3; ++v)
+						texcoords[v] += offset;
+				}
+				// join faces lists
+				texturePatchBig.faces.JoinRemove(texturePatchSmall.faces);
+				// remove the small patch
+				if (j < i)
+					--i; // preserve the container index after shifting an earlier patch
+				texturePatches.RemoveAtMove(j--);
+			}
+		}
+	}
+
 	// The generic packer works on bare rectangles, so patch identity never enters
 	// it; extract once per call site and index the placements back in lockstep.
 	static std::vector<cv::Rect> ExtractRects(const PatchRectArr& patchRects) {
@@ -2012,6 +2046,70 @@ void MeshTexture::PoissonBlendingInteriorLDLT(const Image32F3& src, Image32F3& d
 	}
 }
 
+bool MVS::TexturePatchContainmentTest()
+{
+	const auto check = [](const std::vector<std::pair<uint32_t, cv::Rect>>& inputs,
+	                      const std::vector<std::vector<Mesh::FIndex>>& expectedFaces,
+	                      const std::vector<Mesh::TexCoord>& offsets) {
+		MeshTexture::TexturePatchArr patches;
+		patches.resize(inputs.size());
+		Mesh::TexCoordArr coordinates(inputs.size()*3);
+		for (size_t i=0; i<inputs.size(); ++i) {
+			patches[i].label = inputs[i].first;
+			patches[i].rect = inputs[i].second;
+			patches[i].faces.emplace_back(Mesh::FIndex(i));
+			for (unsigned v=0; v<3; ++v)
+				coordinates[i*3+v] = Mesh::TexCoord(0,0);
+		}
+		MeshTexture::MergeContainedPatches(patches, coordinates);
+		if (patches.size() != expectedFaces.size()) {
+			VERBOSE("ERROR: TexturePatchContainmentTest patch count mismatch");
+			return false;
+		}
+		for (size_t i=0; i<expectedFaces.size(); ++i) {
+			const Mesh::FIndex owner(expectedFaces[i].front());
+			if (patches[i].label != inputs[owner].first || patches[i].rect != inputs[owner].second
+				|| patches[i].faces.size() != expectedFaces[i].size()) {
+				VERBOSE("ERROR: TexturePatchContainmentTest patch ownership mismatch");
+				return false;
+			}
+			for (size_t f=0; f<expectedFaces[i].size(); ++f)
+				if (patches[i].faces[f] != expectedFaces[i][f]) {
+					VERBOSE("ERROR: TexturePatchContainmentTest face order mismatch");
+					return false;
+				}
+		}
+		for (size_t f=0; f<offsets.size(); ++f)
+			for (unsigned v=0; v<3; ++v)
+				if (coordinates[f*3+v] != offsets[f]) {
+					VERBOSE("ERROR: TexturePatchContainmentTest UV offset mismatch");
+					return false;
+				}
+		return true;
+	};
+	const Mesh::TexCoord zero(0,0);
+	// Only the final unmapped patch is present.
+	if (!check({{NO_ID, cv::Rect()}}, {{0}}, {zero}))
+		return false;
+	// Keep the existing j=1 ownership rule: patch zero is never absorbed.
+	if (!check({{7, cv::Rect(2,2,1,1)}, {7, cv::Rect(0,0,10,10)}, {NO_ID, cv::Rect()}},
+	           {{0}, {1}, {2}}, {zero, zero, zero}))
+		return false;
+	// Equal rectangles keep the first owner and preserve joined-face order.
+	if (!check({{7, cv::Rect(0,0,4,4)}, {7, cv::Rect(0,0,4,4)}, {NO_ID, cv::Rect()}},
+	           {{0,1}, {2}}, {zero, zero, zero}))
+		return false;
+	// Removing patch one shifts owner two; it must still absorb patch four,
+	// with the intervening different-label patch and final unmapped patch intact.
+	if (!check({{11, cv::Rect(100,100,2,2)}, {7, cv::Rect(2,2,1,1)},
+	            {7, cv::Rect(0,0,10,10)}, {8, cv::Rect(50,50,3,3)},
+	            {7, cv::Rect(5,5,1,1)}, {NO_ID, cv::Rect()}},
+	           {{0}, {2,1,4}, {3}, {5}}, {zero, Mesh::TexCoord(2,2), zero, zero, Mesh::TexCoord(5,5), zero}))
+		return false;
+	VERBOSE("TexturePatchContainmentTest: four ownership/UV fixtures passed");
+	return true;
+}
+
 bool MVS::PoissonBlendingTest()
 {
 	// Reach the production static method without constructing a texture scene.
@@ -2444,29 +2542,7 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 	}
 
 	// merge texture patches with overlapping rectangles
-	for (unsigned i=0; i<texturePatches.size()-1; ++i) {
-		TexturePatch& texturePatchBig = texturePatches[i];
-		for (unsigned j=1; j<texturePatches.size(); ++j) {
-			if (i == j)
-				continue;
-			TexturePatch& texturePatchSmall = texturePatches[j];
-			if (texturePatchBig.label != texturePatchSmall.label)
-				continue;
-			if (!IsContainedIn(texturePatchSmall.rect, texturePatchBig.rect))
-				continue;
-			// translate texture coordinates
-			const TexCoord offset(texturePatchSmall.rect.tl()-texturePatchBig.rect.tl());
-			for (const FIndex idxFace: texturePatchSmall.faces) {
-				TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
-				for (int v=0; v<3; ++v)
-					texcoords[v] += offset;
-			}
-			// join faces lists
-			texturePatchBig.faces.JoinRemove(texturePatchSmall.faces);
-			// remove the small patch
-			texturePatches.RemoveAtMove(j--);
-		}
-	}
+	MergeContainedPatches(texturePatches, faceTexcoords);
 
 	// create texture
 	{
