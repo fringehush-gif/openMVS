@@ -52,6 +52,10 @@ DEFINE_LOG_NAME(lt, _T("Test    "));
 bool UnitTests()
 {
 	TD_TIMER_START();
+	if (!MVS::PatchMatchTopKLifecycleTest()) {
+		VERBOSE("ERROR: PatchMatchTopKLifecycleTest failed!");
+		return false;
+	}
 
 	if (!SEACAVE::cListTest<true>(100)) {
 		VERBOSE("ERROR: cListTest failed!");
@@ -207,6 +211,8 @@ int main(int argc, LPCTSTR* argv)
 	const bool succeeded = [&]() {
 		if (argc > 1 && String(argv[1]) == _T("triangulation")) {
 			return SFM::TriangulateSphericalSidewaysTest();
+		} else if (argc > 1 && String(argv[1]) == _T("patchmatch-topk")) {
+			return MVS::PatchMatchTopKLifecycleTest();
 		} else if (argc < 2 || std::atoi(argv[1]) == 0) {
 			if (!UnitTests())
 				return false;

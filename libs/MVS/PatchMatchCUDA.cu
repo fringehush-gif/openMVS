@@ -30,6 +30,7 @@
 */
 
 #include "PatchMatchCUDA.inl"
+#include "PatchMatchViewState.h"
 #include "Common/DepthGeometry.h"
 
 // static max supported views
@@ -740,7 +741,10 @@ __host__ void PatchMatch::UploadCameras()
 }
 __host__ void PatchMatch::UploadParams()
 {
-	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_params, &params, sizeof(Params), 0, cudaMemcpyHostToDevice, cudaStream));
+	// Preserve the public requested K; only the upload snapshot is image-clamped.
+	// EstimateDepthMap synchronizes this stream before the next snapshot write.
+	uploadParams = MakePatchMatchUploadParams(params);
+	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_params, &uploadParams, sizeof(Params), 0, cudaMemcpyHostToDevice, cudaStream));
 }
 
 __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)

@@ -265,7 +265,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
 	params.nNumViews = (int)numImages-1;
-	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
+	ASSERT(params.nNumViews > 0);
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
 	if (prevNumImages < numImages) {

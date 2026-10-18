@@ -36,6 +36,7 @@
 #include "../../libs/MVS/SceneDensify.h"
 #include "Tests.h"
 #include "TestsMVS.h"
+#include "../../libs/MVS/PatchMatchViewState.h"
 #include <halfmesh/RectPacking.h>
 
 
@@ -47,6 +48,82 @@
 DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
+
+bool PatchMatchTopKLifecycleTest()
+{
+	const int defaultTopK = 3;
+	ASSERT(defaultTopK > 0);
+	int reusedNumViews = 0;
+	int reusedTopK = defaultTopK;
+	// Exercise the shared production transition, without constructing a CUDA worker.
+	// Neighbor counts exclude the reference image. The middle image must not
+	// poison the next one: the old mutable minimum produced 3, 2, 2.
+	const int counts[] = {8, 2, 4, 4, 1, 1, 8, 3, 2, 4};
+	const int expected[] = {3, 2, 3, 3, 1, 1, 3, 3, 2, 3};
+	for (size_t i = 0; i < sizeof(counts)/sizeof(counts[0]); ++i) {
+		CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, reusedNumViews, reusedTopK);
+		int freshNumViews = 0;
+		int freshTopK = defaultTopK;
+		CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, freshNumViews, freshTopK);
+		if (reusedNumViews != counts[i] || reusedTopK != expected[i] ||
+			reusedNumViews != freshNumViews || reusedTopK != freshTopK)
+			return false;
+	}
+	// Match all production Params fields while keeping this test CUDA-free.
+	struct HostParams {
+		int nNumViews = 5;
+		int nEstimationIters = 7;
+		float fDepthMin = 0.25f;
+		float fDepthMax = 123.f;
+		int nInitTopK = 3;
+		bool bGeomConsistency = true;
+		bool bLowResProcessed = true;
+		float fThresholdKeepCost = 0.75f;
+	};
+	HostParams configured, uploaded;
+	const int neighborCounts[] = {8, 1, 1, 8, 2, 8};
+	const int requests[] = {1, 5, 3};
+	for (int requested : requests) {
+		configured.nInitTopK = requested;
+		for (int count : neighborCounts) {
+			configured.nNumViews = count;
+			uploaded = CUDA::MakePatchMatchUploadParams(configured);
+			if (configured.nInitTopK != requested || configured.nNumViews != count ||
+				uploaded.nInitTopK != std::min(requested, count) || uploaded.nNumViews != count ||
+				uploaded.nEstimationIters != configured.nEstimationIters ||
+				uploaded.fDepthMin != configured.fDepthMin || uploaded.fDepthMax != configured.fDepthMax ||
+				uploaded.bGeomConsistency != configured.bGeomConsistency ||
+				uploaded.bLowResProcessed != configured.bLowResProcessed ||
+				uploaded.fThresholdKeepCost != configured.fThresholdKeepCost)
+				return false;
+		}
+	}
+	// A caller can reconfigure the same worker between image calls.
+	const int changedRequests[] = {1, 5, 3, 5, 1, 3};
+	const int changedCounts[] = {8, 2, 8, 8, 1, 8};
+	const int changedExpected[] = {1, 2, 3, 5, 1, 3};
+	for (size_t i = 0; i < sizeof(changedRequests)/sizeof(changedRequests[0]); ++i) {
+		configured.nInitTopK = changedRequests[i];
+		configured.nNumViews = changedCounts[i];
+		configured.nEstimationIters = int(i)+1;
+		configured.fDepthMin = float(i)+0.5f;
+		configured.fDepthMax = float(i)+100.f;
+		configured.bGeomConsistency = (i%2 == 0);
+		configured.bLowResProcessed = (i%2 != 0);
+		configured.fThresholdKeepCost = float(i)+0.125f;
+		uploaded = CUDA::MakePatchMatchUploadParams(configured);
+		if (configured.nInitTopK != changedRequests[i] || configured.nNumViews != changedCounts[i] ||
+			uploaded.nInitTopK != changedExpected[i] || uploaded.nNumViews != changedCounts[i] ||
+			uploaded.nEstimationIters != configured.nEstimationIters ||
+			uploaded.fDepthMin != configured.fDepthMin || uploaded.fDepthMax != configured.fDepthMax ||
+			uploaded.bGeomConsistency != configured.bGeomConsistency ||
+			uploaded.bLowResProcessed != configured.bLowResProcessed ||
+			uploaded.fThresholdKeepCost != configured.fThresholdKeepCost)
+			return false;
+	}
+	VERBOSE("PatchMatchTopKLifecycleTest: requested configuration and effective upload state agree");
+	return true;
+}
 
 bool MeshVertexColorsPLYTest()
 {

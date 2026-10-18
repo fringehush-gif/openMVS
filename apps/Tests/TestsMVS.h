@@ -42,6 +42,8 @@ bool DMapCacheLoadFailureTest();
 
 // Concurrent prefetched image failures do not report success or lose valid decodes.
 bool ImageCachePrefetchFailureTest();
+// CUDA-free coverage of the production per-image parameter transition.
+bool PatchMatchTopKLifecycleTest();
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();

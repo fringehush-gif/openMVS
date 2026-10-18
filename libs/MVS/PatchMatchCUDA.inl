@@ -89,7 +89,9 @@ private:
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
 	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
 	void UploadCameras(); // upload host cameras into __constant__ g_cameras
-	void UploadParams();  // upload host params into __constant__ g_params
+	void UploadParams();  // upload an effective snapshot into __constant__ g_params
+	// Persistent async-copy source, refreshed only after the previous level completes.
+	Params uploadParams;
 	// For images large enough that the per-call driver-staging stall dominates
 	// (default threshold ~1.5 MP), copy a pageable cv::Mat1f into a per-instance
 	// pinned slot then enqueue a truly-async H->D DMA on cudaStream. For smaller
@@ -100,6 +102,7 @@ private:
 		std::vector<float*>& slots, std::vector<size_t>& areas, size_t slotIdx);
 
 public:
+	// nInitTopK is the requested K; nNumViews records the current image count.
 	Params params;
 
 	std::vector<cv::Mat1f> images;
