@@ -42,6 +42,7 @@
 #include <CGAL/AABB_traits_3.h>
 #include <CGAL/AABB_triangle_primitive_3.h>
 #include <CGAL/Polyhedron_3.h>
+#include <boost/property_map/transform_value_property_map.hpp>
 
 using namespace MVS;
 
@@ -764,17 +765,16 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 	{
 		TD_TIMER_STARTD();
 
-		std::vector<point_t> vertices(pointcloud.points.GetSize());
 		std::vector<std::ptrdiff_t> indices;
-		indices.reserve(pointcloud.points.GetSize());
 		// fetch points
 		if (bUseOnlyROI && !IsBounded())
 			bUseOnlyROI = false;
+		if (!bUseOnlyROI)
+			indices.reserve(pointcloud.points.GetSize());
 		FOREACH(i, pointcloud.points) {
 			const PointCloud::Point& X(pointcloud.points[i]);
 			if (bUseOnlyROI && !obb.Intersects(X))
 				continue;
-			vertices[i] = point_t(X.x, X.y, X.z);
 			indices.emplace_back(i);
 		}
 		if (indices.empty()) {
@@ -782,8 +782,10 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			return false;
 		}
 		// sort vertices
-		typedef CGAL::Spatial_sort_traits_adapter_3<delaunay_t::Geom_traits, point_t*> Search_traits;
-		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(vertices.data(), delaunay.geom_traits()));
+		const auto pointMap = boost::make_transform_value_property_map(
+		    [](const PointCloud::Point& point) { return MVS2CGAL(point); }, pointcloud.points.Begin());
+		typedef CGAL::Spatial_sort_traits_adapter_3<delaunay_t::Geom_traits, decltype(pointMap)> Search_traits;
+		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(pointMap, delaunay.geom_traits()));
 		// insert vertices
 		Util::Progress progress(_T("Points inserted"), indices.size());
 		const float distInsertSq(SQUARE(distInsert));
@@ -791,7 +793,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		delaunay_t::Locate_type lt;
 		int li, lj;
 		std::for_each(indices.cbegin(), indices.cend(), [&](size_t idx) {
-			const point_t& p = vertices[idx];
+			const point_t p(MVS2CGAL(pointcloud.points[idx]));
 			const PointCloud::Point& point = pointcloud.points[idx];
 			const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 			ASSERT(!views.IsEmpty());
@@ -863,7 +865,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// release the insertion buffers now: the solver allocated below is the memory peak of the
 		// reconstruction and must not overlap them
 		const size_t numPoints(indices.size());
-		std::vector<point_t>().swap(vertices);
 		std::vector<std::ptrdiff_t>().swap(indices);
 		if (delaunay.dimension() < 3) {
 			VERBOSE("error: too few or degenerate points for Delaunay reconstruction (dimension %d)", delaunay.dimension());
@@ -905,9 +906,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				ci->info() = offsets[keys[k++]]++;
 			ASSERT(k == numNodes && offsets[numVertices] == numNodes);
 		}
-		// allocate the graph (all weights zero) only now, after the insertion and numbering buffers
-		// are gone: the solver's storage is the memory peak of the reconstruction
-		graph.Reset(numNodes);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), eci=delaunay.all_cells_end(); ci!=eci; ++ci) {
 			// skip the finite cells
 			if (!delaunay.is_infinite(ci))
@@ -954,6 +952,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			} else
 				DEBUG_ULTIMATE("\tcanonical rescale not needed: median Delaunay edge %g inside [2^-%g, 2^%g]", medianEdge, kLog2CanonicalBand, kLog2CanonicalBand);
 		}
+		// Allocate the graph after the edge-length workspace is released.
+		graph.Reset(numNodes);
 		// find all cells containing a camera
 		camCells.resize(images.GetSize());
 		FOREACH(i, images) {
