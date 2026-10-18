@@ -66,6 +66,8 @@ int nIgnoreMaskLabel;
 unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 bool bPoissonInteriorLDLT;
+int nExportPNGCompression;
+bool bExportPNGBuffered;
 int nProcessPriority;
 unsigned nMaxThreads;
 int nMaxTextureSize;
@@ -130,6 +132,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("global-seam-leveling", boost::program_options::value(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
 		("local-seam-leveling", boost::program_options::value(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
 		("texture-size-multiple", boost::program_options::value(&OPT::nTextureSizeMultiple)->default_value(0), "texture size should be a multiple of this value (0 - power of two)")
+		("export-texture-png-compression", boost::program_options::value(&OPT::nExportPNGCompression)->default_value(6), "PNG compression level for lossless PLY textures (0 - fastest, 9 - smallest)")
+		("export-texture-png-buffered", boost::program_options::value(&OPT::bExportPNGBuffered)->default_value(false), "encode each lossless PLY texture in memory before writing (uses extra RAM)")
 		("empty-color", boost::program_options::value(&OPT::nColEmpty)->default_value(0x00FF7F27), "color used for faces not covered by any image")
 		("sharpness-weight", boost::program_options::value(&OPT::fSharpnessWeight)->default_value(0.f), "amount of sharpness to be applied on the texture (0 - disabled)")
 		("poisson-interior-ldlt", boost::program_options::value(&OPT::bPoissonInteriorLDLT)->default_value(false), "use an interior-only local seam solver (changes floating colors; disabled by default)")
@@ -212,6 +216,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		}
 	}
 
+	if (OPT::nExportPNGCompression < 0 || OPT::nExportPNGCompression > 9) {
+		VERBOSE("error: PNG compression level must be in range [0..9]");
+		return false;
+	}
+	if ((!OPT::vm["export-texture-png-compression"].defaulted() || !OPT::vm["export-texture-png-buffered"].defaulted()) &&
+		(OPT::strExportType != _T(".ply") || !OPT::bExportTextureLossless || OPT::bVertexColors)) {
+		VERBOSE("error: PNG export options require lossless PLY textures");
+		return false;
+	}
 	// initialize optional options
 	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
@@ -347,7 +360,7 @@ int main(int argc, LPCTSTR* argv)
 	}
 
 	// save the final mesh
-	if (!scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless))
+	if (!scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless, OPT::nExportPNGCompression, OPT::bExportPNGBuffered))
 		return EXIT_FAILURE;
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)

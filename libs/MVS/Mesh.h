@@ -321,6 +321,8 @@ public:
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
+	bool Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression) const;
+	bool Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression, bool bPNGBuffered) const;
 	bool Save(const FacesChunkArr&, const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 
@@ -335,6 +337,8 @@ protected:
 	bool LoadGLTF(const String& fileName);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
+	bool SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression) const;
+	bool SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression, bool bPNGBuffered) const;
 	bool SaveOBJ(const String& fileName, bool bTexLossless=true) const;
 	// bTexLossless selects PNG over JPEG for the diffuse textures, which are
 	// written beside the file, same as SavePLY

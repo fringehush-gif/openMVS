@@ -111,6 +111,8 @@ faces around it; images are released as soon as their faces are consumed.
 | `--poisson-interior-ldlt` | false | interior-only factorization with prescribed border colors; floating-point results can change |
 | `--texture-size-multiple` | 0 | page size multiple (0 = power of two) |
 | `--max-texture-size` | 8192 | page size cap; more pages when exceeded |
+| `--export-texture-png-compression` | 6 | PNG compression level 0-9 for lossless PLY textures |
+| `--export-texture-png-buffered` | false | encode PNG before writing; requires additional RAM |
 | `--empty-color` | 0x00FF7F27 | colour of faces no view sees |
 | `--sharpness-weight` | 0 | unsharp-mask weight |
 | `--remove-unseen-faces` | 0 | drop faces seen by fewer than N images before texturing |

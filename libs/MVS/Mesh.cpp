@@ -714,12 +714,57 @@ bool Mesh::LoadPLY(const String& fileName)
 /*----------------------------------------------------------------*/
 
 // export the mesh to the given file
+// encode a lossless texture before writing it in bounded blocks
+static bool SaveTexturePNG(const Image8U3& image, const String& fileName, int nCompression, bool bBuffered)
+{
+	ASSERT(!image.empty());
+	ASSERT(nCompression >= 0 && nCompression <= 9);
+	ASSERT(Util::getFileExt(fileName).ToLower() == _T(".png"));
+	try {
+		if (!bBuffered) {
+			Util::ensureFolder(fileName);
+			return cv::imwrite(fileName, image, {cv::IMWRITE_PNG_COMPRESSION, nCompression});
+		}
+		std::vector<uchar> buffer;
+		if (!cv::imencode(".png", image, buffer, {cv::IMWRITE_PNG_COMPRESSION, nCompression}))
+			return false;
+		Util::ensureFolder(fileName);
+		File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
+		if (!file.isOpen())
+			return false;
+		const size_t BLOCK_SIZE(1024 * 1024);
+		for (size_t offset = 0; offset < buffer.size();) {
+			const size_t size(MINF(BLOCK_SIZE, buffer.size() - offset));
+			if (file.write(buffer.data() + offset, size) != size)
+				return false;
+			offset += size;
+		}
+	} catch (const cv::Exception& ex) {
+		VERBOSE("error: saving texture '%s' (exception: %s)", fileName.c_str(), ex.what());
+		return false;
+	}
+	return true;
+}
+
+// export the mesh to the given file
 bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
 {
+	return Save(fileName, comments, bBinary, bTexLossless, 6, false);
+}
+bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression) const
+{
+	return Save(fileName, comments, bBinary, bTexLossless, nPNGCompression, false);
+}
+bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression, bool bPNGBuffered) const
+{
+	if (nPNGCompression < 0 || nPNGCompression > 9)
+		return false;
 	if (IsEmpty())
 		return false;
 	TD_TIMER_STARTD();
 	const String ext(Util::getFileExt(fileName).ToLower());
+	if ((bPNGBuffered || nPNGCompression != 6) && (!bTexLossless || ext == _T(".obj") || ext == _T(".gltf") || ext == _T(".glb")))
+		return false;
 	bool ret;
 	if (ext == _T(".obj"))
 		ret = SaveOBJ(fileName, bTexLossless);
@@ -727,7 +772,7 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 	if (ext == _T(".gltf") || ext == _T(".glb"))
 		ret = SaveGLTF(fileName, ext == _T(".glb"), bTexLossless);
 	else
-		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary, bTexLossless);
+		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary, bTexLossless, nPNGCompression, bPNGBuffered);
 	if (!ret) {
 		VERBOSE("error: failed saving mesh '%s'", fileName.c_str());
 		return false;
@@ -740,6 +785,16 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 // export the mesh as a PLY file
 bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
 {
+	return SavePLY(fileName, comments, bBinary, bTexLossless, 6, false);
+}
+bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression) const
+{
+	return SavePLY(fileName, comments, bBinary, bTexLossless, nPNGCompression, false);
+}
+bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless, int nPNGCompression, bool bPNGBuffered) const
+{
+	if (nPNGCompression < 0 || nPNGCompression > 9 || (!bTexLossless && (bPNGBuffered || nPNGCompression != 6)))
+		return false;
 	ASSERT(!fileName.empty());
 	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
 	ASSERT(vertexColors.empty() || vertexColors.size() == vertices.size());
@@ -755,7 +810,9 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		FOREACH(texId, texturesDiffuse) {
 		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string((unsigned)texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
 		    ply.AddComment(_T("TextureFile ")+Util::getFileNameExt(textureFileName));
-		    if (!texturesDiffuse[texId].Save(textureFileName))
+		    if (!(bTexLossless && (bPNGBuffered || nPNGCompression != 6)
+				? SaveTexturePNG(texturesDiffuse[texId], textureFileName, nPNGCompression, bPNGBuffered)
+				: texturesDiffuse[texId].Save(textureFileName)))
 		        return false;
 		}
 	}
