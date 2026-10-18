@@ -139,6 +139,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nEstimationIters;
 	unsigned nEstimationGeometricIters;
 	unsigned nPatchMatchCUDAInstances;
+	unsigned nPatchMatchCUDAImageCacheMemory;
 	unsigned nGeometricCacheMemory;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
@@ -168,6 +169,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("patch-match-cuda-instances", boost::program_options::value(&nPatchMatchCUDAInstances)->default_value(4), "number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)")
+		("patch-match-cuda-image-cache-memory", boost::program_options::value(&nPatchMatchCUDAImageCacheMemory)->default_value(0), "maximum retained CUDA photo cache memory in MiB, with the same cap for host and device allocations (0 - disabled)")
 		("geometric-cache-memory", boost::program_options::value(&nGeometricCacheMemory)->default_value(0), "maximum decoded previous-pass depth-map cache memory in MiB (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
@@ -281,6 +283,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nEstimationIters = nEstimationIters;
 	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	OPTDENSE::nPatchMatchCUDAInstances = nPatchMatchCUDAInstances;
+	OPTDENSE::nPatchMatchCUDAImageCacheMemory = nPatchMatchCUDAImageCacheMemory;
 	OPTDENSE::nGeometricCacheMemory = nGeometricCacheMemory;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;

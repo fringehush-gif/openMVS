@@ -48,6 +48,11 @@
 
 namespace MVS {
 
+namespace CUDA {
+// Configure retention before creating the estimation worker pool; zero disables it.
+MVS_API void ConfigurePhotoCache(size_t maxMemory);
+} // namespace CUDA
+
 /**
  * @brief Propagate and refine the depth/normal estimate for a single pixel.
  *

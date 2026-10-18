@@ -33,6 +33,8 @@
 #include "PatchMatchCUDA.h"
 #include "DepthMap.h"
 #include "ConfidenceCUDA.h"
+#include <map>
+#include <memory>
 
 #ifdef _USE_CUDA
 
@@ -68,6 +70,198 @@ namespace {
 std::mutex g_patchMatchCudaMutex;
 cudaEvent_t g_constMemReady = nullptr;
 std::once_flag g_constMemEventInit;
+// Photo generations are immutable; depth priors never enter this cache.
+struct PhotoCacheEntry
+{
+	cv::Mat1f parent, image;
+	unsigned scale;
+	int device;
+	cudaArray_t array = nullptr;
+	cudaTextureObject_t texture = 0;
+	cudaEvent_t ready = nullptr;
+	size_t leases = 0, gpuBytes = 0, cpuBytes = 0;
+	uint64_t stamp = 0;
+};
+std::mutex g_photoCacheMutex;
+std::vector<std::unique_ptr<PhotoCacheEntry>> g_photoCache;
+std::map<int, size_t> g_photoCacheOwners;
+uint64_t g_photoCacheStamp = 0;
+size_t g_photoCacheMemory = 0;
+constexpr size_t PHOTO_CACHE_ENTRIES = 256;
+
+struct PhotoCacheUsage
+{
+	size_t gpuBytes = 0, cpuBytes = 0, entries = 0;
+};
+
+PhotoCacheUsage MeasurePhotoCache(int device, const cv::Mat1f& parent, const cv::Mat1f& image)
+{
+	ASSERT(!parent.empty() && !image.empty() && parent.u && image.u);
+	// Allocation identity counts a shared parent, ROI or pyramid buffer once.
+	std::map<const void*, size_t> allocations;
+	const auto account = [&](const cv::Mat1f& matrix) {
+		ASSERT(matrix.u != nullptr);
+		allocations.emplace(matrix.u, matrix.u->size);
+	};
+	PhotoCacheUsage usage;
+	for (const auto& entry : g_photoCache)
+		if (entry->device == device) {
+			usage.gpuBytes += entry->gpuBytes;
+			++usage.entries;
+			account(entry->parent);
+			account(entry->image);
+		}
+	account(parent);
+	account(image);
+	for (const auto& allocation : allocations)
+		usage.cpuBytes += allocation.second;
+	usage.gpuBytes += size_t(image.cols) * image.rows * sizeof(float);
+	++usage.entries;
+	return usage;
+}
+
+bool PhotoCacheEnabled()
+{
+	return g_photoCacheMemory != 0;
+}
+
+void DestroyPhotoCacheEntry(PhotoCacheEntry& entry)
+{
+	ASSERT(entry.leases == 0);
+	// Readers release only after their stream's last read has completed.
+	if (entry.ready)
+		cudaEventSynchronize(entry.ready);
+	if (entry.texture)
+		cudaDestroyTextureObject(entry.texture);
+	if (entry.array)
+		cudaFreeArray(entry.array);
+	if (entry.ready)
+		cudaEventDestroy(entry.ready);
+}
+
+void RegisterPhotoCacheOwner()
+{
+	int device;
+	CUDA_CHECK(cudaGetDevice(&device));
+	std::lock_guard<std::mutex> lock(g_photoCacheMutex);
+	++g_photoCacheOwners[device];
+}
+
+void UnregisterPhotoCacheOwner()
+{
+	int device;
+	CUDA_CHECK(cudaGetDevice(&device));
+	std::lock_guard<std::mutex> lock(g_photoCacheMutex);
+	auto owner = g_photoCacheOwners.find(device);
+	ASSERT(owner != g_photoCacheOwners.end() && owner->second > 0);
+	if (--owner->second != 0)
+		return;
+	for (auto it = g_photoCache.begin(); it != g_photoCache.end();) {
+		if ((*it)->device != device) {
+			++it;
+			continue;
+		}
+		DestroyPhotoCacheEntry(**it);
+		it = g_photoCache.erase(it);
+	}
+	g_photoCacheOwners.erase(owner);
+}
+
+bool ReleasePhotoCacheLease(cudaArray_t array)
+{
+	std::lock_guard<std::mutex> lock(g_photoCacheMutex);
+	for (const auto& entry : g_photoCache) {
+		if (entry->array != array)
+			continue;
+		ASSERT(entry->leases > 0);
+		--entry->leases;
+		entry->stamp = ++g_photoCacheStamp;
+		return true;
+	}
+	return false;
+}
+
+template <typename Upload>
+bool AcquirePhotoCache(const cv::Mat1f& parent, const cv::Mat1f& image,
+                       unsigned scale, cudaStream_t stream, cudaArray_t& array,
+                       cudaTextureObject_t& texture, Upload upload)
+{
+	ASSERT(!parent.empty() && !image.empty());
+	if (!PhotoCacheEnabled() || !parent.u || !image.u)
+		return false;
+	const size_t gpuBytes = size_t(image.cols) * image.rows * sizeof(float);
+	// A request must fit even if it is the only retained generation.
+	const size_t cpuBytes = parent.u->size + (image.u == parent.u ? 0 : image.u->size);
+	if (gpuBytes > g_photoCacheMemory || cpuBytes > g_photoCacheMemory)
+		return false;
+	int device;
+	CUDA_CHECK(cudaGetDevice(&device));
+	std::lock_guard<std::mutex> lock(g_photoCacheMutex);
+	for (const auto& entry : g_photoCache) {
+		if (entry->device != device || entry->scale != scale || entry->parent.u != parent.u || entry->parent.data != parent.data || entry->parent.size() != parent.size() || entry->parent.step[0] != parent.step[0] || entry->image.size() != image.size())
+			continue;
+		CUDA_CHECK(cudaStreamWaitEvent(stream, entry->ready, 0));
+		++entry->leases;
+		entry->stamp = ++g_photoCacheStamp;
+		array = entry->array;
+		texture = entry->texture;
+		return true;
+	}
+	auto usage = MeasurePhotoCache(device, parent, image);
+	while (usage.gpuBytes > g_photoCacheMemory || usage.cpuBytes > g_photoCacheMemory || usage.entries > PHOTO_CACHE_ENTRIES) {
+		auto victim = g_photoCache.end();
+		for (auto it = g_photoCache.begin(); it != g_photoCache.end(); ++it) {
+			if ((*it)->device != device || (*it)->leases != 0)
+				continue;
+			if (victim == g_photoCache.end() || (*it)->stamp < (*victim)->stamp)
+				victim = it;
+		}
+		if (victim == g_photoCache.end())
+			return false;
+		DestroyPhotoCacheEntry(**victim);
+		g_photoCache.erase(victim);
+		usage = MeasurePhotoCache(device, parent, image);
+	}
+	auto entry = std::make_unique<PhotoCacheEntry>();
+	entry->parent = parent;
+	entry->image = image;
+	entry->device = device;
+	entry->scale = scale;
+	entry->gpuBytes = gpuBytes;
+	entry->cpuBytes = cpuBytes;
+	try {
+		const auto channel = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
+		CUDA_CHECK(cudaMallocArray(&entry->array, &channel, image.cols, image.rows));
+		cudaResourceDesc resource{};
+		resource.resType = cudaResourceTypeArray;
+		resource.res.array.array = entry->array;
+		cudaTextureDesc descriptor{};
+		descriptor.addressMode[0] = descriptor.addressMode[1] = cudaAddressModeWrap;
+		descriptor.filterMode = cudaFilterModeLinear;
+		descriptor.readMode = cudaReadModeElementType;
+		CUDA_CHECK(cudaCreateTextureObject(&entry->texture, &resource, &descriptor, nullptr));
+		CUDA_CHECK(cudaEventCreateWithFlags(&entry->ready, cudaEventDisableTiming));
+		upload(entry->array);
+		CUDA_CHECK(cudaEventRecord(entry->ready, stream));
+	} catch (...) {
+		cudaStreamSynchronize(stream);
+		DestroyPhotoCacheEntry(*entry);
+		throw;
+	}
+	// Publish only after the producer has recorded its ready event.
+	auto* published = entry.get();
+	try {
+		g_photoCache.push_back(std::move(entry));
+	} catch (...) {
+		DestroyPhotoCacheEntry(*entry);
+		throw;
+	}
+	published->leases = 1;
+	published->stamp = ++g_photoCacheStamp;
+	array = published->array;
+	texture = published->texture;
+	return true;
+}
 
 // destroy the texture object and free its CUDA array; a slot is left unallocated
 // when its view has no depth-map, and destroying a null texture object is an error
@@ -75,12 +269,21 @@ void FreeTextureArray(cudaArray_t& array, cudaTextureObject_t& texture)
 {
 	if (array == NULL)
 		return;
-	cudaDestroyTextureObject(texture);
-	cudaFreeArray(array);
+	if (!ReleasePhotoCacheLease(array)) {
+		cudaDestroyTextureObject(texture);
+		cudaFreeArray(array);
+	}
 	array = NULL;
 	texture = 0;
 }
 } // anonymous namespace
+
+void ConfigurePhotoCache(size_t maxMemory)
+{
+	std::lock_guard<std::mutex> lock(g_photoCacheMutex);
+	ASSERT(g_photoCache.empty() && g_photoCacheOwners.empty());
+	g_photoCacheMemory = maxMemory;
+}
 
 PatchMatch::PatchMatch()
 	: cudaStream(0)
@@ -89,11 +292,13 @@ PatchMatch::PatchMatch()
 	if (SEACAVE::CUDA::devices.IsEmpty())
 		SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
 	CUDA_CHECK(cudaStreamCreate(&cudaStream));
+	RegisterPhotoCacheOwner();
 }
 
 PatchMatch::~PatchMatch()
 {
 	Release();
+	UnregisterPhotoCacheOwner();
 	if (cudaStream)
 		cudaStreamDestroy(cudaStream);
 }
@@ -102,6 +307,8 @@ void PatchMatch::Release()
 {
 	if (images.empty())
 		return;
+	// Teardown also covers estimation failures with queued work.
+	CUDA_CHECK(cudaStreamSynchronize(cudaStream));
 
 	FOREACH(i, cudaImageArrays)
 		FreeTextureArray(cudaImageArrays[i], textureImages[i]);
@@ -346,18 +553,29 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 					ReleaseCUDA();
 				AllocatePatchMatchCUDA(image);
 			}
-			if (i >= prevNumImages) {
-				// allocate image CUDA memory
-				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
-			} else
-			if (images[i].size() != image.size()) {
-				// reallocate image CUDA memory
+			bool photoCached = false;
+			if (PhotoCacheEnabled()) {
+				// Previous scale/estimation completed its stream before slot reuse.
 				FreeTextureArray(cudaImageArrays[i], textureImages[i]);
+				photoCached = AcquirePhotoCache(fullResDepthData.images[i].image, image,
+				                                scaleNumber, cudaStream, cudaImageArrays[i], textureImages[i],
+				                                [&](cudaArray_t destination) {
+					                                StagedUploadCvMat(destination, image, hostImageStaging, hostImageStagingArea, size_t(i));
+				                                });
+			}
+			if (i >= prevNumImages || cudaImageArrays[i] == NULL) {
+				if (i < prevNumImages && params.bGeomConsistency && i > 0)
+					FreeTextureArray(cudaDepthArrays[i - 1], textureDepths[i - 1]);
+				// allocate image CUDA memory
+				AllocateImageCUDA(i, image, !photoCached, !view.depthMap.empty());
+			} else if (images[i].size() != image.size()) {
+				// reallocate image CUDA memory
+				if (!photoCached)
+					FreeTextureArray(cudaImageArrays[i], textureImages[i]);
 				if (params.bGeomConsistency && i > 0)
 					FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
-				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
-			} else
-			if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i-1] == NULL))) {
+				AllocateImageCUDA(i, image, !photoCached, !view.depthMap.empty());
+			} else if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i - 1] == NULL))) {
 				// reallocate depth CUDA memory
 				FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
@@ -365,7 +583,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			// large images stage through per-instance pinned slot for a truly-async
 			// H->D DMA on cudaStream; small images fall through to direct pageable
 			// DMA inside StagedUploadCvMat (driver-internal staging is cheaper)
-			StagedUploadCvMat(cudaImageArrays[i], image, hostImageStaging, hostImageStagingArea, (size_t)i);
+			if (!photoCached)
+				StagedUploadCvMat(cudaImageArrays[i], image, hostImageStaging, hostImageStagingArea, (size_t)i);
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);

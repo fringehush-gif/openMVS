@@ -121,6 +121,7 @@ DEFVAR_OPTDENSE_bool(bEstimateConfidenceCUDA, "Estimate Confidence CUDA", "when 
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAInstances, "PatchMatch CUDA Instances", "Number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)", "4")
+DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAImageCacheMemory, "PatchMatch CUDA Image Cache Memory", "Maximum retained CUDA photo cache memory in MiB, with the same cap for host and device allocations (0 - disabled)", "0")
 DEFVAR_OPTDENSE_uint32(nGeometricCacheMemory, "Geometric Cache Memory", "Maximum decoded previous-pass depth-map cache memory in MiB (0 - disabled)", "0")
 MDEFVAR_OPTDENSE_float(fEstimationGeometricWeight, "Estimation Geometric Weight", "pairwise geometric consistency cost weight", "0.1")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")

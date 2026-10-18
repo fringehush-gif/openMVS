@@ -2985,8 +2985,8 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 // and, once per worker, the backend staging buffers mirroring the images, the
 // neighbor depth-maps and the packed depth+normal estimates
 unsigned DenseWorkerPoolSize(unsigned requested, unsigned maxWorkers,
-	const ImageArr& sceneImages, const IIndexArr& images, const DepthDataArr& arrDepthData,
-                             size_t reservedMemory, bool bSnapshotCache)
+                             const ImageArr& sceneImages, const IIndexArr& images, const DepthDataArr& arrDepthData,
+                             size_t reservedMemory, bool bSnapshotCache, size_t reservedDeviceMemory)
 {
 	ASSERT(requested > 0 && maxWorkers > 0);
 	size_t area(0);
@@ -3039,7 +3039,9 @@ unsigned DenseWorkerPoolSize(unsigned requested, unsigned maxWorkers,
 			(numViews - 1) * sizeof(float)/*depth arrays*/ +
 			sizeEstimate/*estimates*/ + sizeof(float)/*costs*/ +
 			sizeof(unsigned)/*selected views*/ + sizeof(curandState)));
-		const unsigned deviceWorkers(MAXF((unsigned)(freeDevice * 4 / 5 / deviceWorker), 1u));
+		const size_t availableDevice(freeDevice * 4 / 5);
+		const size_t workerDevice(availableDevice > reservedDeviceMemory ? availableDevice - reservedDeviceMemory : 0);
+		const unsigned deviceWorkers(MAXF((unsigned)(workerDevice / deviceWorker), 1u));
 		if (deviceWorkers < poolSize) {
 			VERBOSE("Depth-map estimation limited to %u workers (%u requested): %.1fGB free on device, %.1fGB needed per worker",
 				deviceWorkers, poolSize, (double)freeDevice/(1024*1024*1024), (double)deviceWorker/(1024*1024*1024));
@@ -3303,26 +3305,43 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	// chain). The GPU backend (CUDA on Windows/Linux, Metal on Apple) is selected by
 	// the shared --gpu-device param (-1 GPU, -2/cpu/empty CPU).
 	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
+		size_t photoCacheMemory(0);
+	#ifdef _USE_CUDA
+		// Use the selected device for both cache and worker memory planning.
+		if (SEACAVE::CUDA::devices.IsEmpty())
+			SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
+		if (!SEACAVE::CUDA::devices.IsEmpty()) {
+			size_t freeDevice(0), totalDevice(0);
+			if (cudaMemGetInfo(&freeDevice, &totalDevice) == cudaSuccess) {
+				const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+				const size_t reservedMemory(ComputeSafetyMemory(memInfo) + data.depthMaps.imageCache.GetFreeMemory() + snapshotMemory);
+				const size_t availableMemory(memInfo.freePhysical > reservedMemory ? memInfo.freePhysical - reservedMemory : 0);
+				photoCacheMemory = MINF(size_t(OPTDENSE::nPatchMatchCUDAImageCacheMemory) * 1024 * 1024, MINF(availableMemory / 4, freeDevice / 5));
+			}
+			MVS::CUDA::ConfigurePhotoCache(photoCacheMemory);
+			DEBUG_EXTRA("CUDA photo cache: %zu MiB maximum in each of host and device memory", photoCacheMemory / 1024 / 1024);
+		}
+	#endif
 		const unsigned poolSize = (nMaxThreads > 1)
-		                              ? DenseWorkerPoolSize(MAXF(OPTDENSE::nPatchMatchCUDAInstances, 1u), nMaxThreads, images, data.images, data.depthMaps.arrDepthData, data.depthMaps.imageCache.GetFreeMemory() + snapshotMemory, snapshotMemory != 0)
-			: 1u;
-		#ifdef _USE_CUDA
+		                              ? DenseWorkerPoolSize(MAXF(OPTDENSE::nPatchMatchCUDAInstances, 1u), nMaxThreads, images, data.images, data.depthMaps.arrDepthData, data.depthMaps.imageCache.GetFreeMemory() + snapshotMemory + photoCacheMemory, snapshotMemory != 0, photoCacheMemory)
+		                              : 1u;
+	#ifdef _USE_CUDA
 		const bool bAllocatedPool = data.depthMaps.AllocateCudaPool(poolSize);
-		#else
+	#else
 		const bool bAllocatedPool = SEACAVE::METAL::isRuntimeAvailable() && data.depthMaps.AllocateMetalPool(poolSize);
 		if (!bAllocatedPool)
 			VERBOSE("WARNING: Metal runtime health check failed; using CPU depth-map estimation");
-		#endif
+	#endif
 		if (bAllocatedPool) {
 			// raise the in-flight semaphore so all pool workers can run
 			// EstimateDepthMap concurrently
 			data.sem.Clear(poolSize);
 			data.nDenseWorkers = poolSize;
-			#ifdef _USE_CUDA
+	#ifdef _USE_CUDA
 			VERBOSE("Using CUDA compute backend for depth-map estimation (%u workers)", poolSize);
-			#else
+	#else
 			VERBOSE("Using Metal compute backend for depth-map estimation (%u workers)", poolSize);
-			#endif
+	#endif
 		}
 	}
 	#endif // _USE_CUDA || _USE_METAL
