@@ -724,14 +724,17 @@ bool PointCloud::SavePLY(const String& fileName, bool bViews, bool bLegacyTypes,
 	return ply.Save(fileName, bBinary ? PLY::BINARY_LE : PLY::ASCII, bLegacyTypes);
 }
 
-// save the dense point-cloud as PLY file
+// append the payload with four-byte alignment
 template <typename T>
-void ExtendBufferGLTF(const T* src, size_t size, tinygltf::Buffer& dst, size_t& byte_offset, size_t& byte_length) {
+void ExtendBufferGLTF(const T* src, size_t size, tinygltf::Buffer& dst, size_t& byte_offset, size_t& byte_length)
+{
+	ASSERT(src != nullptr && size > 0);
+	ASSERT(dst.data.size() % 4 == 0);
 	byte_offset = dst.data.size();
-	byte_length = sizeof(T) * size;
-	byte_length = ((byte_length + 3) / 4) * 4;
+	const size_t dataLength(sizeof(T) * size);
+	byte_length = ((dataLength + 3) / 4) * 4;
 	dst.data.resize(byte_offset + byte_length);
-	memcpy(&dst.data[byte_offset], &src[0], byte_length);
+	memcpy(dst.data.data() + byte_offset, src, dataLength);
 }
 
 // export the point-cloud to the given file
@@ -745,6 +748,9 @@ bool PointCloud::SaveGLTF(const String& fileName, bool bBinary) const
 	tinygltf::Scene gltfScene;
 	tinygltf::Mesh gltfMesh;
 	tinygltf::Buffer gltfBuffer;
+	const size_t payloadSize(sizeof(Point)*points.size()
+		+ ((sizeof(Color)*colors.size()+3)/4)*4 + sizeof(Normal)*normals.size());
+	gltfBuffer.data.reserve(payloadSize);
 	gltfScene.name = "scene";
 	gltfMesh.name = "pointcloud";
 

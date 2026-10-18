@@ -72,15 +72,51 @@ bool MeshVertexColorsPLYTest()
 			if (pointCloud.points[idxVertex] != mesh.vertices[idxVertex] || pointCloud.colors[idxVertex] != mesh.vertexColors[idxVertex])
 				return false;
 	}
-	PointCloud pointCloud;
-	pointCloud.points = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
-	pointCloud.colors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
-	pointCloud.normals = {{0.f, 0.f, 1.f}, {0.f, 0.f, 1.f}, {0.f, 0.f, 1.f}};
-	const String fileName(tmpDir(_T("pointcloud.glb")));
-	PointCloud loaded;
-	if (!pointCloud.Save(fileName) || !loaded.Load(fileName) ||
-		loaded.points != pointCloud.points || loaded.colors != pointCloud.colors || loaded.normals != pointCloud.normals)
-		return false;
+	for (uint32_t numPoints = 1; numPoints <= 8; ++numPoints) {
+		PointCloud pointCloud;
+		for (uint32_t idx = 0; idx < numPoints; ++idx) {
+			pointCloud.points.push_back(PointCloud::Point(float(idx), float(idx % 3), float(idx % 5)));
+			pointCloud.colors.push_back(Pixel8U(uint8_t(idx + 1), uint8_t(idx + 11), uint8_t(idx + 21)));
+			pointCloud.normals.push_back(PointCloud::Normal(0.f, 0.f, 1.f));
+		}
+		// Unused source capacity must not supply exported alignment bytes.
+		pointCloud.colors.push_back(Pixel8U(0xAD, 0xBE, 0xEF));
+		pointCloud.colors.RemoveLast();
+		for (const bool bBinary : {false, true}) {
+			const String fileName(tmpDir(bBinary ? _T("pointcloud.glb") : _T("pointcloud.gltf")));
+			PointCloud loaded;
+			if (!pointCloud.Save(fileName) || !loaded.Load(fileName) || loaded.points != pointCloud.points || loaded.colors != pointCloud.colors || loaded.normals != pointCloud.normals)
+				return false;
+			if (!bBinary)
+				continue;
+			std::ifstream stream(fileName.c_str(), std::ios::binary);
+			const auto readUint32 = [&stream]() {
+				uint8_t bytes[4] = {};
+				stream.read((char*)bytes, sizeof(bytes));
+				return uint32_t(bytes[0]) | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24;
+			};
+			uint32_t header[5];
+			for (uint32_t& value : header)
+				value = readUint32();
+			if (!stream || header[0] != 0x46546C67 || header[1] != 2 || header[4] != 0x4E4F534A)
+				return false;
+			stream.seekg(header[3], std::ios::cur);
+			uint32_t binaryHeader[2];
+			for (uint32_t& value : binaryHeader)
+				value = readUint32();
+			const size_t colorBytes(size_t(numPoints) * 3);
+			const size_t paddedColorBytes((colorBytes + 3) / 4 * 4);
+			if (!stream || binaryHeader[1] != 0x004E4942 || binaryHeader[0] != size_t(numPoints) * 24 + paddedColorBytes)
+				return false;
+			std::vector<uint8_t> buffer(binaryHeader[0]);
+			stream.read((char*)buffer.data(), buffer.size());
+			if (!stream)
+				return false;
+			for (size_t idx = colorBytes; idx < paddedColorBytes; ++idx)
+				if (buffer[size_t(numPoints) * 12 + idx] != 0)
+					return false;
+		}
+	}
 	return true;
 }
 
