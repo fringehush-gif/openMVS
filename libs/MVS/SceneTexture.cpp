@@ -32,6 +32,7 @@
 #include "Common.h"
 #include "Scene.h"
 #include "TextureFaceIndex.h"
+#include "TextureSeamIndex.h"
 #include <halfmesh/RectPacking.h>
 #include <halfmesh/Util/Raster.h>
 // connected components
@@ -1975,6 +1976,7 @@ void MeshTexture::LocalSeamLeveling()
 {
 	ASSERT(!seamVertices.empty());
 	const unsigned numPatches(texturePatches.size()-1);
+	const TEXTURESEAMINDEX::Index patchSeamIndex(TEXTURESEAMINDEX::Build(seamVertices, numPatches));
 
 	// adjust texture patches locally, so that the border continues smoothly inside the patch
 	#ifdef TEXOPT_USE_OPENMP
@@ -2008,7 +2010,8 @@ void MeshTexture::LocalSeamLeveling()
 		// render the patch border meeting neighbor patches
 		const Sampler sampler;
 		const TexCoord offset(texturePatch.rect.tl());
-		for (const SeamVertex& seamVertex0: seamVertices) {
+		for (size_t idxPatchSeam = patchSeamIndex.offsets[idxPatch]; idxPatchSeam < patchSeamIndex.offsets[idxPatch + 1]; ++idxPatchSeam) {
+			const SeamVertex& seamVertex0(seamVertices[patchSeamIndex.vertices[idxPatchSeam]]);
 			if (seamVertex0.patches.size() < 2)
 				continue;
 			const uint32_t idxVertPatch0(seamVertex0.patches.Find(idxPatch));

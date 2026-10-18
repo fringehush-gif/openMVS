@@ -125,6 +125,10 @@ bool UnitTests()
 		VERBOSE("ERROR: TextureFaceIndexTest failed!");
 		return false;
 	}
+	if (!MVS::TextureSeamIndexTest()) {
+		VERBOSE("ERROR: TextureSeamIndexTest failed!");
+		return false;
+	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;

@@ -46,6 +46,7 @@
 #include <thread>
 #include "../../libs/MVS/TextureFaceIndex.h"
 #include <random>
+#include "../../libs/MVS/TextureSeamIndex.h"
 #include <halfmesh/RectPacking.h>
 
 
@@ -4101,6 +4102,31 @@ bool TextureFaceIndexTest()
 			return false;
 	}
 	return RemainingFaceIndex(0).GetSize() == 0;
+}
+
+bool TextureSeamIndexTest()
+{
+	struct PatchRef { uint32_t idxPatch; };
+	struct Seam { std::vector<PatchRef> patches; };
+	const std::vector<Seam> seams{Seam{{PatchRef{2}, PatchRef{0}}}, Seam{{PatchRef{1}}},
+	                              Seam{{PatchRef{2}, PatchRef{1}}}, Seam{}};
+	const TEXTURESEAMINDEX::Index index(TEXTURESEAMINDEX::Build(seams, 3));
+	std::vector<size_t> referenceOffsets(4, 0);
+	std::vector<uint32_t> referenceVertices;
+	for (uint32_t patch = 0; patch < 3; ++patch) {
+		referenceOffsets[patch] = referenceVertices.size();
+		for (uint32_t vertex = 0; vertex < seams.size(); ++vertex) {
+			bool incident = false;
+			for (const PatchRef& ref : seams[vertex].patches)
+				incident = incident || ref.idxPatch == patch;
+			if (incident)
+				referenceVertices.push_back(vertex);
+		}
+	}
+	referenceOffsets[3] = referenceVertices.size();
+	return index.offsets == referenceOffsets && index.vertices == referenceVertices
+	       && index.offsets == std::vector<size_t>{0, 1, 3, 5}
+	       && index.vertices == std::vector<uint32_t>{0, 1, 2, 0, 2};
 }
 
 } // namespace MVS

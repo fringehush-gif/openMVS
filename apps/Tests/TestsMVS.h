@@ -106,4 +106,6 @@ bool MeshAdjacencyBoundaryTest();
 
 bool TextureFaceIndexTest();
 
+bool TextureSeamIndexTest();
+
 } // namespace MVS
