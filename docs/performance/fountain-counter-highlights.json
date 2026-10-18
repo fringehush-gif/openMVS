@@ -1,0 +1,383 @@
+{
+  "schema": "openmvs.fountainTwoPassHighlights/v2",
+  "date": "2026-10-18",
+  "dataset": "FountainP11, 11 original photos and fixed calibrated cameras",
+  "hardware": "Ryzen 9 3900X, 24 threads; RTX 3080 Ti 12 GiB; WSL2, isolated machine",
+  "source": "15c7cf8042cab8237e487c2debb5bb16bda69b55",
+  "upstream": "610562a4f033be2aaf4f240512c93e1038186768",
+  "topKRestoration": false,
+  "pairedPasses": 2,
+  "method": "Two paired passes with identical builds/settings. Run 1 is the later instrumented pass: host 0.25 s, GPU 0.5 s and perf counters. Run 2 is the earlier benchmark: peak RSS and GPU 2 s. Means average each arm wall time across both passes; unavailable metrics are null. Earlier candidate headlines are incremental against recorded controls.",
+  "meanWallComparisons": [
+    {
+      "resolution": 768,
+      "beforeMeanWallSeconds": 33.925,
+      "afterMeanWallSeconds": 32.51,
+      "meanWallChangePercent": -4.1709653647752365
+    },
+    {
+      "resolution": 1536,
+      "beforeMeanWallSeconds": 106.36500000000001,
+      "afterMeanWallSeconds": 98.55000000000001,
+      "meanWallChangePercent": -7.347341700747423
+    },
+    {
+      "resolution": 3072,
+      "beforeMeanWallSeconds": 224.23499999999996,
+      "afterMeanWallSeconds": 204.21,
+      "meanWallChangePercent": -8.930363234998973
+    }
+  ],
+  "runs": [
+    {
+      "schema": "openmvs.fountainCounterHighlights/v1",
+      "date": "2026-10-18",
+      "dataset": "FountainP11, 11 original photos and fixed calibrated cameras",
+      "hardware": "Ryzen 9 3900X, 24 threads; RTX 3080 Ti 12 GiB; WSL2, isolated machine",
+      "source": "15c7cf8042cab8237e487c2debb5bb16bda69b55",
+      "upstream": "610562a4f033be2aaf4f240512c93e1038186768",
+      "topKRestoration": false,
+      "hostSampleIntervalSeconds": 0.25,
+      "gpuSampleIntervalSeconds": 0.5,
+      "comparisons": [
+        {
+          "resolution": 768,
+          "before": {
+            "wallSeconds": 34.43,
+            "meanRamMiB": 562.829420686549,
+            "peakRamMiB": 885.7578125,
+            "meanVramMiB": 1477.1506818419944,
+            "peakVramMiB": 1934.56640625,
+            "gpuEnergyKJ": 2.0335761565799713,
+            "cpuSeconds": 133.67,
+            "averageCpuCores": 3.882370026139994,
+            "instructions": 471610543974.0,
+            "instructionsPerCycle": 0.9987456242847412
+          },
+          "after": {
+            "wallSeconds": 33.23,
+            "meanRamMiB": 517.8323257379968,
+            "peakRamMiB": 885.3984375,
+            "meanVramMiB": 1467.1117056991807,
+            "peakVramMiB": 1960.56640625,
+            "gpuEnergyKJ": 2.0227526412899497,
+            "cpuSeconds": 124.11,
+            "averageCpuCores": 3.7348781221787544,
+            "instructions": 413371483875.0,
+            "instructionsPerCycle": 0.9194019157779451
+          },
+          "wallChangePercent": -3.485332558814991,
+          "meanRamChangePercent": -7.99480149663534,
+          "peakRamChangePercent": -0.04057260290888376,
+          "meanVramChangePercent": -0.6796176088342709,
+          "peakVramChangePercent": 1.3439704068054725,
+          "gpuEnergyChangePercent": -0.5322404698245631,
+          "cpuTimeChangePercent": -7.151941348096047,
+          "instructionsChangePercent": -12.348973288054966
+        },
+        {
+          "resolution": 1536,
+          "before": {
+            "wallSeconds": 108.12,
+            "meanRamMiB": 1469.3945499414276,
+            "peakRamMiB": 2224.26171875,
+            "meanVramMiB": 1569.1571950810123,
+            "peakVramMiB": 2562.56640625,
+            "gpuEnergyKJ": 4.9395152124636175,
+            "cpuSeconds": 466.15999999999997,
+            "averageCpuCores": 4.311505734369219,
+            "instructions": 1603748142255.0,
+            "instructionsPerCycle": 0.95904888291241
+          },
+          "after": {
+            "wallSeconds": 100.73,
+            "meanRamMiB": 1394.6780205797088,
+            "peakRamMiB": 2186.84765625,
+            "meanVramMiB": 1553.3819571608424,
+            "peakVramMiB": 2678.56640625,
+            "gpuEnergyKJ": 4.73935172400975,
+            "cpuSeconds": 420.38999999999993,
+            "averageCpuCores": 4.173433932294251,
+            "instructions": 1419531490970.0,
+            "instructionsPerCycle": 0.9296963276784922
+          },
+          "wallChangePercent": -6.834998150203475,
+          "meanRamChangePercent": -5.08485140119086,
+          "peakRamChangePercent": -1.6820890358633767,
+          "meanVramChangePercent": -1.0053319048991427,
+          "peakVramChangePercent": 4.526711960208352,
+          "gpuEnergyChangePercent": -4.052290150839221,
+          "cpuTimeChangePercent": -9.818517247297077,
+          "instructionsChangePercent": -11.486632248002259
+        },
+        {
+          "resolution": 3072,
+          "before": {
+            "wallSeconds": 230.10999999999999,
+            "meanRamMiB": 2580.2969218546673,
+            "peakRamMiB": 5586.140625,
+            "meanVramMiB": 2096.8934162676032,
+            "peakVramMiB": 5316.56640625,
+            "gpuEnergyKJ": 12.586036865017428,
+            "cpuSeconds": 896.69,
+            "averageCpuCores": 3.896788492460128,
+            "instructions": 2822051827105.0,
+            "instructionsPerCycle": 0.876522888719658
+          },
+          "after": {
+            "wallSeconds": 209.52,
+            "meanRamMiB": 2379.344584133427,
+            "peakRamMiB": 4987.5859375,
+            "meanVramMiB": 2009.968326799001,
+            "peakVramMiB": 4652.56640625,
+            "gpuEnergyKJ": 12.025109452423568,
+            "cpuSeconds": 837.0699999999999,
+            "averageCpuCores": 3.9951794578083235,
+            "instructions": 2496104626776.0,
+            "instructionsPerCycle": 0.8321492237482332
+          },
+          "wallChangePercent": -8.947894485246177,
+          "meanRamChangePercent": -7.787954014873599,
+          "peakRamChangePercent": -10.714994979203551,
+          "meanVramChangePercent": -4.145422404126087,
+          "peakVramChangePercent": -12.489263732686961,
+          "gpuEnergyChangePercent": -4.456743759848225,
+          "cpuTimeChangePercent": -6.648897612329807,
+          "instructionsChangePercent": -11.5500075937079
+        }
+      ],
+      "candidate3072Stages": [
+        {
+          "stage": "DensifyPointCloud",
+          "wallSeconds": 73.52,
+          "wallSharePercent": 35.08972890416189,
+          "averageCpuCores": 1.5807943416757346,
+          "instructionsPerCycle": 1.0187324897122514,
+          "cacheMissPercent": 20.81615061960704,
+          "branchMissPercent": 3.9550861316043546,
+          "gpuUtilizationPercent": 10.210509929185013,
+          "meanRamMiB": 3211.1121618919856,
+          "peakRamMiB": 4987.5859375,
+          "meanVramMiB": 2867.297819852444,
+          "gpuEnergyKJ": 6.544625390396833,
+          "nativePhaseSeconds": {
+            "Depth-maps dense fused and filtered": 28.255
+          }
+        },
+        {
+          "stage": "ReconstructMesh",
+          "wallSeconds": 80.87,
+          "wallSharePercent": 38.59774723176785,
+          "averageCpuCores": 5.74489922097193,
+          "instructionsPerCycle": 1.0183112307123248,
+          "cacheMissPercent": 29.31493106423185,
+          "branchMissPercent": 2.954874102986092,
+          "gpuUtilizationPercent": 1.1646419202445035,
+          "meanRamMiB": 2240.358105053984,
+          "peakRamMiB": 3059.91796875,
+          "meanVramMiB": 1357.2421875,
+          "gpuEnergyKJ": 1.6705730421149734,
+          "nativePhaseSeconds": {
+            "Delaunay tetrahedralization completed": 33.755,
+            "Delaunay tetrahedras weighting completed": 17.132,
+            "Delaunay tetrahedras graph-cut completed": 14.646,
+            "Cleaned mesh": 7.965
+          }
+        },
+        {
+          "stage": "RefineMesh",
+          "wallSeconds": 39.28,
+          "wallSharePercent": 18.747613592974417,
+          "averageCpuCores": 1.8233197556008147,
+          "instructionsPerCycle": 0.5029594852163486,
+          "cacheMissPercent": 40.19438925168186,
+          "branchMissPercent": 4.810376040809059,
+          "gpuUtilizationPercent": 8.527172852244437,
+          "meanRamMiB": 1786.60001759605,
+          "peakRamMiB": 2462.62890625,
+          "meanVramMiB": 1945.8546635445891,
+          "gpuEnergyKJ": 2.6129544802944658,
+          "nativePhaseSeconds": {
+            "Cleaned mesh": 1.48
+          }
+        },
+        {
+          "stage": "TextureMesh",
+          "wallSeconds": 15.85,
+          "wallSharePercent": 7.564910271095837,
+          "averageCpuCores": 11.649211356466878,
+          "instructionsPerCycle": 0.3799739727680518,
+          "cacheMissPercent": 36.90986200392277,
+          "branchMissPercent": 2.7162235577413067,
+          "gpuUtilizationPercent": 0.5171447263658249,
+          "meanRamMiB": 1236.920440325482,
+          "peakRamMiB": 2683.31640625,
+          "meanVramMiB": 1664.9519650739992,
+          "gpuEnergyKJ": 1.0704682554826739,
+          "nativePhaseSeconds": {}
+        }
+      ],
+      "quality": {
+        "scoredViews": 66,
+        "meshAudits": 18,
+        "hardInvalidOrDuplicateFaces": 0,
+        "maxAbsSsimDelta": 1.9311904907226562e-05,
+        "maxAbsPsnrDelta": 0.0033588409423828125,
+        "geometryExact": true
+      },
+      "method": "One fresh instrumented run per arm/resolution; same builds and options as first comparison. Native RSS excludes wrappers; whole-GPU memory and power include desktop/driver. Time-weighted means. Full traces remain offline. Earlier individual candidate numbers are incremental against recorded controls.",
+      "repetitionsPerArmAndResolution": 1,
+      "run": 1,
+      "chronology": "later instrumented pass"
+    },
+    {
+      "run": 2,
+      "chronology": "earlier original benchmark",
+      "hostSampleIntervalSeconds": null,
+      "gpuSampleIntervalSeconds": 2,
+      "repetitionsPerArmAndResolution": 1,
+      "comparisons": [
+        {
+          "resolution": 768,
+          "before": {
+            "wallSeconds": 33.419999999999995,
+            "meanRamMiB": null,
+            "peakRamMiB": 886.17578125,
+            "meanVramMiB": 1476.2219209192992,
+            "peakVramMiB": 1926.56640625,
+            "gpuEnergyKJ": null,
+            "cpuSeconds": 127.76,
+            "averageCpuCores": 3.8228605625374037,
+            "instructions": null,
+            "instructionsPerCycle": null
+          },
+          "after": {
+            "wallSeconds": 31.79,
+            "meanRamMiB": null,
+            "peakRamMiB": 899.50390625,
+            "meanVramMiB": 1455.5188125728248,
+            "peakVramMiB": 1836.56640625,
+            "gpuEnergyKJ": null,
+            "cpuSeconds": 120.49000000000001,
+            "averageCpuCores": 3.7901855929537596,
+            "instructions": null,
+            "instructionsPerCycle": null
+          },
+          "wallChangePercent": -4.877318970676225,
+          "meanRamChangePercent": null,
+          "peakRamChangePercent": 1.5040046548326913,
+          "meanVramChangePercent": -1.4024387561987872,
+          "peakVramChangePercent": -4.671523374851228
+        },
+        {
+          "resolution": 1536,
+          "before": {
+            "wallSeconds": 104.61,
+            "meanRamMiB": null,
+            "peakRamMiB": 2224.08203125,
+            "meanVramMiB": 1555.7509952410571,
+            "peakVramMiB": 2476.56640625,
+            "gpuEnergyKJ": null,
+            "cpuSeconds": 457.45000000000005,
+            "averageCpuCores": 4.3729088997227805,
+            "instructions": null,
+            "instructionsPerCycle": null
+          },
+          "after": {
+            "wallSeconds": 96.37,
+            "meanRamMiB": null,
+            "peakRamMiB": 2186.39453125,
+            "meanVramMiB": 1542.8513016701152,
+            "peakVramMiB": 2574.56640625,
+            "gpuEnergyKJ": null,
+            "cpuSeconds": 410.53999999999996,
+            "averageCpuCores": 4.260039431358306,
+            "instructions": null,
+            "instructionsPerCycle": null
+          },
+          "wallChangePercent": -7.87687601567727,
+          "meanRamChangePercent": null,
+          "peakRamChangePercent": -1.6945193329410801,
+          "meanVramChangePercent": -0.8291618395489531,
+          "peakVramChangePercent": 3.957091550328795
+        },
+        {
+          "resolution": 3072,
+          "before": {
+            "wallSeconds": 218.35999999999996,
+            "meanRamMiB": null,
+            "peakRamMiB": 5588.94921875,
+            "meanVramMiB": 2076.0842169395073,
+            "peakVramMiB": 5292.56640625,
+            "gpuEnergyKJ": null,
+            "cpuSeconds": 876.07,
+            "averageCpuCores": 4.012044330463456,
+            "instructions": null,
+            "instructionsPerCycle": null
+          },
+          "after": {
+            "wallSeconds": 198.9,
+            "meanRamMiB": null,
+            "peakRamMiB": 5117.140625,
+            "meanVramMiB": 1996.2949658692294,
+            "peakVramMiB": 4604.56640625,
+            "gpuEnergyKJ": null,
+            "cpuSeconds": 793.8199999999999,
+            "averageCpuCores": 3.991050779286073,
+            "instructions": null,
+            "instructionsPerCycle": null
+          },
+          "wallChangePercent": -8.911888624290143,
+          "meanRamChangePercent": null,
+          "peakRamChangePercent": -8.441812141845206,
+          "meanVramChangePercent": -3.8432569555343243,
+          "peakVramChangePercent": -12.99936452734045
+        }
+      ],
+      "quality": {
+        "scoredViews": 66,
+        "meshAudits": 18,
+        "hardInvalidBefore": 0,
+        "hardInvalidAfter": 0,
+        "maxAbsAggregateSsimDelta": 4.589557647705078e-06,
+        "maxAbsAggregatePsnrDelta": 0.002796173095703125
+      }
+    }
+  ],
+  "quality": {
+    "scoredViewEvaluations": 132,
+    "meshAudits": 36,
+    "geometryExact": true,
+    "maxAbsSsimDelta": 1.9311904907226562e-05,
+    "maxAbsPsnrDelta": 0.0033588409423828125
+  },
+  "settings": {
+    "photoCacheMiB": 256,
+    "depthCacheMiB": 512,
+    "cudaTextureScoring": true,
+    "interiorLDLT": true,
+    "pngBuffered": true,
+    "pngCompression": 2,
+    "topKRestoration": false,
+    "images": 11,
+    "cpuThreads": 24,
+    "losslessTextureOutput": "PLY/PNG",
+    "coreStages": [
+      "DensifyPointCloud",
+      "ReconstructMesh",
+      "RefineMesh",
+      "TextureMesh"
+    ]
+  },
+  "takeaways": {
+    "fullResolutionRun1": {
+      "densificationBeforeSeconds": 84.08,
+      "densificationAfterSeconds": 73.52,
+      "texturingBeforeSeconds": 23.77,
+      "texturingAfterSeconds": 15.85,
+      "densificationAndTexturingSavedSeconds": 18.480000000000004,
+      "totalSavedSeconds": 20.589999999999975,
+      "shareOfWallSavingsPercent": 89.75230694511912
+    }
+  }
+}
