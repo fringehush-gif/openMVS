@@ -1,0 +1,52 @@
+--- a/tiny_gltf.h
++++ b/tiny_gltf.h
+@@ -7502,11 +7502,12 @@
+   SerializeExtrasAndExtensions(asset, o);
+ }
+ 
+ static void SerializeGltfBufferBin(const Buffer &buffer, detail::json &o,
+-                                   std::vector<unsigned char> &binBuffer) {
++                                   std::vector<unsigned char> &binBuffer,
++                                   bool copyBuffer = true) {
+   SerializeNumberProperty("byteLength", buffer.data.size(), o);
+-  binBuffer = buffer.data;
++  if (copyBuffer) binBuffer = buffer.data;
+ 
+   if (buffer.name.size()) SerializeStringProperty("name", buffer.name, o);
+ 
+   SerializeExtrasAndExtensions(buffer, o);
+@@ -8663,15 +8664,22 @@
+ 
+   // BUFFERS
+   std::vector<std::string> usedFilenames;
+   std::vector<unsigned char> binBuffer;
++  const std::vector<unsigned char> *binBufferView = &binBuffer;
+   if (model->buffers.size()) {
+     detail::json buffers;
+     detail::JsonReserveArray(buffers, model->buffers.size());
+     for (unsigned int i = 0; i < model->buffers.size(); ++i) {
+       detail::json buffer;
+       if (writeBinary && i == 0 && model->buffers[i].uri.empty()) {
+-        SerializeGltfBufferBin(model->buffers[i], buffer, binBuffer);
++        // No later image/URI callbacks can mutate the sole source buffer.
++        // Other models keep their snapshot; the stream writer does too.
++        const bool borrowBuffer =
++            model->buffers.size() == 1 && model->images.empty();
++        SerializeGltfBufferBin(model->buffers[i], buffer, binBuffer,
++                               !borrowBuffer);
++        if (borrowBuffer) binBufferView = &model->buffers[i].data;
+       } else if (embedBuffers) {
+         SerializeGltfBuffer(model->buffers[i], buffer);
+       } else {
+         std::string binSavePath;
+@@ -8739,9 +8747,9 @@
+   }
+ 
+   if (writeBinary) {
+     return WriteBinaryGltfFile(filename, detail::JsonToString(output),
+-                               binBuffer);
++                               *binBufferView);
+   } else {
+     return WriteGltfFile(filename,
+                          detail::JsonToString(output, (prettyPrint ? 2 : -1)));
+   }
