@@ -202,18 +202,54 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel
 	confOut[idx] = ConfRefine::Posterior(ref.Conf(idx), priorMap[idx], K, Pconf, (float)V, p);
 }
 
-// RAII: free every cudaMalloc'd pointer on scope exit (success or early return), then consume any
-// pending CUDA error so a non-fatal failure (e.g. OOM) does not leak this thread's last-error into a
-// later CUDA call on the same reused pool-worker thread.
-// On an early failure the kernels may still be queued on the stream when this runs: that is safe
-// only because cudaFree implicitly synchronizes with the device work referencing the allocation
-// before releasing it -- if these frees are ever switched to cudaFreeAsync (or another non-
-// synchronizing release), the failure paths must first cudaStreamSynchronize the launch stream.
-namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) cudaFree(p); cudaGetLastError(); } }; }
+// Allocations belong to the launch stream. Complete queued frees before leaving
+// the scope, including failure paths, and consume this thread's last CUDA error.
+namespace {
+struct DevBag
+{
+	std::vector<void*> v;
+	cudaStream_t stream;
+	bool async = false;
+	explicit DevBag(cudaStream_t stream) :
+	    stream(stream)
+	{
+#if CUDART_VERSION >= 11020
+		int device, supported = 0;
+		if (cudaGetDevice(&device) == cudaSuccess && cudaDeviceGetAttribute(&supported, cudaDevAttrMemoryPoolsSupported, device) == cudaSuccess)
+			async = supported != 0;
+#endif
+	}
+	cudaError_t Alloc(void** ptr, size_t bytes)
+	{
+		ASSERT(ptr != nullptr && bytes > 0);
+#if CUDART_VERSION >= 11020
+		if (async)
+			return cudaMallocAsync(ptr, bytes, stream);
+#endif
+		return cudaMalloc(ptr, bytes);
+	}
+	~DevBag()
+	{
+#if CUDART_VERSION >= 11020
+		if (async) {
+			for (void* p : v)
+				if (cudaFreeAsync(p, stream) != cudaSuccess) {
+					cudaStreamSynchronize(stream);
+					cudaFree(p);
+				}
+			cudaStreamSynchronize(stream);
+		} else
+#endif
+			for (void* p : v)
+				cudaFree(p);
+		cudaGetLastError();
+	}
+};
+} // namespace
 
 // shared tail of both launchers: allocate the prior/output buffers, upload the neighbor maps +
 // descriptors, launch both kernels on `stream`, download the adjusted confidence and synchronize.
-// Every device allocation is tracked in `bag`, freed by the caller's scope exit.
+// Every device allocation is tracked in `bag` and released on the launch stream.
 template <typename RefAcc>
 static bool LaunchConfidenceKernels(
 	int W, int H, const RefAcc& ref,
@@ -226,7 +262,8 @@ static bool LaunchConfidenceKernels(
 	auto dmalloc = [&](size_t bytes) -> void* {
 		void* p = nullptr;
 		if (bytes == 0) return nullptr;
-		if (cudaMalloc(&p, bytes) != cudaSuccess) return (void*)-1;
+		if (bag.Alloc(&p, bytes) != cudaSuccess)
+			return (void*)-1;
 		bag.v.push_back(p);
 		return p;
 	};
@@ -299,15 +336,16 @@ bool RunConfidenceCUDA(
 {
 	if (W <= 0 || H <= 0 || nNeighbors < 0) return false;
 	const size_t nPix = (size_t)W * (size_t)H;
-	DevBag bag;
 	cudaStream_t stream = 0;
 	if (cudaStreamCreate(&stream) != cudaSuccess) return false;
 	struct StreamGuard { cudaStream_t s; ~StreamGuard(){ cudaStreamDestroy(s); } } sg{stream};
+	DevBag bag(stream);
 
 	auto dmalloc = [&](size_t bytes) -> void* {
 		void* p = nullptr;
 		if (bytes == 0) return nullptr;
-		if (cudaMalloc(&p, bytes) != cudaSuccess) return (void*)-1;
+		if (bag.Alloc(&p, bytes) != cudaSuccess)
+			return (void*)-1;
 		bag.v.push_back(p);
 		return p;
 	};
@@ -339,7 +377,7 @@ bool RunConfidenceFusedCUDA(
 	void* stream, float* confOut)
 {
 	if (W <= 0 || H <= 0 || nNeighbors < 0 || !devDepthNormals || !devCosts || !confOut) return false;
-	DevBag bag;
+	DevBag bag((cudaStream_t)stream);
 	// Point4 is 4 contiguous floats (x,y,z = normal, w = depth), 16-byte aligned by cudaMalloc
 	const RefPackedAcc ref{reinterpret_cast<const float4*>(devDepthNormals), devCosts, W, H};
 	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy,
