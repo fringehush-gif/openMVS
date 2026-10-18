@@ -74,6 +74,10 @@ void DMapCache::SetMaxMemory(size_t max_memory_bytes) {
 }
 
 bool DMapCache::UseImage(IIndex idxImage) const {
+	return UseImage(idxImage, true);
+}
+
+bool DMapCache::UseImage(IIndex idxImage, bool waitForProducer) const {
 	ASSERT(idxImage < arrDepthData.size());
 	// unique_lock, NOT lock_guard: the miss path below releases the lock around the slow disk
 	// Load(); if that throws while unlocked, only a lock that tracks ownership skips the
@@ -94,8 +98,10 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 	}
 	lock.unlock();
 	const String fileName(ComposeDepthFilePath(arrDepthData[idxImage].GetView().GetID(), "dmap"));
-	while (!std::filesystem::is_regular_file(static_cast<const std::string&>(fileName)))
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	if (waitForProducer) {
+		while (!std::filesystem::is_regular_file(static_cast<const std::string&>(fileName)))
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
 	if (!arrDepthData[idxImage].Load(fileName, loadFlags)) {
 		// corrupt or truncated file: leave the map empty and uncached, callers test IsEmpty()
 		arrDepthData[idxImage].Release();

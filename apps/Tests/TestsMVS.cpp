@@ -31,6 +31,9 @@
 
 #include "../../libs/MVS.h"
 #include "../../libs/MVS/SceneRefineCommon.h"
+#include <fstream>
+#include "../../libs/MVS/DMapCache.h"
+#include "../../libs/MVS/SceneDensify.h"
 #include "Tests.h"
 #include "TestsMVS.h"
 #include <halfmesh/RectPacking.h>
@@ -3565,5 +3568,102 @@ bool ImageCachePrefetchFailureTest()
 	return true;
 }
 /*----------------------------------------------------------------*/
+
+bool DMapCacheLoadFailureTest()
+{
+	const ScopedTempDir tmpDir(_T("DMapCacheLoadFailureTest"));
+	const auto fail = [](const char* detail) {
+		VERBOSE("ERROR: DMapCacheLoadFailureTest: %s", detail);
+		return false;
+	};
+	if (!tmpDir.IsValid())
+		return fail("could not create temporary directory");
+
+	struct WorkingFolderReset
+	{
+		String original;
+		~WorkingFolderReset() { WORKING_FOLDER = original; }
+	} workingFolderReset{WORKING_FOLDER};
+	WORKING_FOLDER = tmpDir.Path();
+	Util::ensureValidFolderPath(WORKING_FOLDER);
+
+	const auto expectNoFusedPoints = [&](const char* detail, bool denseFusion) {
+		Scene scene;
+		scene.images.resize(1);
+		scene.images[0].ID = 73;
+		DepthMapsData depthMaps(scene);
+		depthMaps.arrDepthData.resize(1);
+		DepthData& depthData(depthMaps.arrDepthData[0]);
+		depthData.images.resize(1);
+		depthData.images[0].pImageData = &scene.images[0];
+		depthData.neighbors.resize(1);
+		depthData.neighbors[0].ID = 0;
+		PointCloud pointcloud;
+		// Exercise both explicit non-waiting overloads used after estimation has joined.
+		if (denseFusion)
+			depthMaps.DenseFuseDepthMaps(pointcloud, false, false, false);
+		else
+			depthMaps.FuseDepthMaps(pointcloud, false, false, false);
+		if (!pointcloud.points.empty())
+			return fail(detail);
+		return true;
+	};
+
+	if (!expectNoFusedPoints("missing depth-map produced fused points", false) ||
+		!expectNoFusedPoints("missing depth-map produced dense-fused points", true))
+		return false;
+
+	const String truncatedPath(ComposeDepthFilePath(73, "dmap"));
+	{
+		std::ofstream truncated(truncatedPath.c_str(), std::ios::binary);
+		if (!truncated.is_open())
+			return fail("could not create truncated depth-map fixture");
+		truncated.write("bad", 3);
+		if (!truncated)
+			return fail("could not write truncated depth-map fixture");
+	}
+	if (!expectNoFusedPoints("truncated depth-map produced fused points", false) ||
+		!expectNoFusedPoints("truncated depth-map produced dense-fused points", true))
+		return false;
+
+	// A valid reference map larger than the cache budget must survive its load-time eviction pass.
+	Image fixtureImage;
+	fixtureImage.ID = 74;
+	fixtureImage.name = _T("oversized-cache-fixture.png");
+	DepthDataArr oversizedMaps;
+	oversizedMaps.resize(1);
+	DepthData& oversizedMap(oversizedMaps[0]);
+	oversizedMap.images.resize(1);
+	oversizedMap.images[0].pImageData = &fixtureImage;
+	oversizedMap.images[0].camera = Camera::IDENTITY;
+	oversizedMap.size = cv::Size(128, 128);
+	oversizedMap.dMin = 0.1f;
+	oversizedMap.dMax = 10.f;
+	oversizedMap.depthMap.create(oversizedMap.size);
+	oversizedMap.depthMap.setTo(1.f);
+	oversizedMap.confMap.create(oversizedMap.size);
+	oversizedMap.confMap.setTo(1.f);
+	const String oversizedPath(ComposeDepthFilePath(fixtureImage.ID, "dmap"));
+	if (!oversizedMap.Save(oversizedPath))
+		return fail("could not write oversized depth-map fixture");
+	oversizedMap.Release();
+	{
+		DMapCache cache(oversizedMaps, HeaderDepthDataRaw::CONTENT_MASK, 1);
+		cache.SkipMemoryCheckIdxImage(0);
+		if (!cache.UseImage(0, false) || oversizedMaps[0].IsEmpty())
+			return fail("pinned oversized reference map was evicted during load");
+		cache.SkipMemoryCheckIdxImage();
+		cache.ClearCache();
+	}
+	{
+		DMapCache cache(oversizedMaps, HeaderDepthDataRaw::CONTENT_MASK, 1);
+		if (!cache.UseImage(0, false))
+			return fail("oversized control map did not load from disk");
+		if (!oversizedMaps[0].IsEmpty() || !cache.IsEmpty())
+			return fail("unpinned oversized control map was not evicted");
+		cache.ClearCache();
+	}
+	return true;
+}
 
 } // namespace MVS

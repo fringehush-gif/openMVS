@@ -37,6 +37,9 @@
 
 namespace MVS {
 
+// Missing/truncated and oversized depth-map inputs exercise joined fusion admission.
+bool DMapCacheLoadFailureTest();
+
 // Concurrent prefetched image failures do not report success or lose valid decodes.
 bool ImageCachePrefetchFailureTest();
 

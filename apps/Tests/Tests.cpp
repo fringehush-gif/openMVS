@@ -101,6 +101,10 @@ bool UnitTests()
 		VERBOSE("ERROR: wide string UTF-8 conversion failed!");
 		return false;
 	}
+	if (!MVS::DMapCacheLoadFailureTest()) {
+		VERBOSE("ERROR: DMapCacheLoadFailureTest failed!");
+		return false;
+	}
 	if (!MVS::ImageCachePrefetchFailureTest()) {
 		VERBOSE("ERROR: ImageCachePrefetchFailureTest failed!");
 		return false;

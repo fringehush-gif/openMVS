@@ -2213,6 +2213,11 @@ std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataA
 // filter out points blocking the view
 void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
 {
+	FuseDepthMaps(pointcloud, bEstimateColor, bEstimateNormal, true);
+}
+
+void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal, bool waitForProducer)
+{
 	TD_TIMER_STARTD();
 
 	struct Proj {
@@ -2270,15 +2275,16 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
 		totalNumImagesInCache += numImagesInCache;
 		// fuse depth-map
-		cacheDMaps.UseImage(idxImage);
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
+		cacheDMaps.UseImage(idxImage, waitForProducer);
 		const DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		if (depthData.IsEmpty()) {
 			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
+			cacheDMaps.SkipMemoryCheckIdxImage();
 			mapReaders.ReleaseMaps(depthData, idxImage, arrDepthIdx);
 			continue;
 		}
-		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		ASSERT(!depthData.images.empty() && !depthData.neighbors.empty());
@@ -2293,7 +2299,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			const DepthData& depthDataB(arrDepthData[neighbor.ID]);
 			if (!depthDataB.IsValid())
 				continue;
-			cacheDMaps.UseImage(neighbor.ID);
+			cacheDMaps.UseImage(neighbor.ID, waitForProducer);
 			if (depthDataB.IsEmpty())
 				continue;
 			if (++numNeighbors >= OPTDENSE::nMaxViewsFuse)
@@ -2478,6 +2484,11 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 // filter out points blocking the view
 void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool _bEstimateNormal)
 {
+	DenseFuseDepthMaps(pointcloud, bEstimateColor, _bEstimateNormal, true);
+}
+
+void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool _bEstimateNormal, bool waitForProducer)
+{
 	TD_TIMER_STARTD();
 
 	typedef SEACAVE::BitMatrix UseMask;
@@ -2658,15 +2669,16 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		totalNumImagesInCache += numImagesInCache;
 		++numDMapsFused;
 		// fuse depth-map
-		cacheDMaps.UseImage(idxImage);
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
+		cacheDMaps.UseImage(idxImage, waitForProducer);
 		DepthData& depthData(arrDepthData[idxImage]); // non-const: GetIntraMapPrior caches into depthData.priorMap
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		if (depthData.IsEmpty()) {
 			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
+			cacheDMaps.SkipMemoryCheckIdxImage();
 			mapReaders.ReleaseMaps(depthData, idxImage, arrUseMask);
 			continue;
 		}
-		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		if (bUsePrior)
@@ -2690,7 +2702,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			const DepthData& depthDataB(arrDepthData[neighbor.ID]);
 			if (!depthDataB.IsValid())
 				continue;
-			cacheDMaps.UseImage(neighbor.ID);
+			cacheDMaps.UseImage(neighbor.ID, waitForProducer);
 			if (depthDataB.IsEmpty())
 				continue;
 			neighbors[neighbor.ID] = true;
@@ -2867,11 +2879,11 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 		break;
 	case OPTDENSE::FUSE_FILTER:
 		// fuse depth-maps
-		data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+		data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2, false);
 		break;
 	case OPTDENSE::FUSE_DENSEFILTER:
 		// dense fuse depth-maps
-		data.depthMaps.DenseFuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+		data.depthMaps.DenseFuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2, false);
 	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {

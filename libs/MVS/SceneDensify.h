@@ -124,6 +124,9 @@ public:
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
+	// Explicit non-waiting overloads are valid only after depth-map producers have joined.
+	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal, bool waitForProducer);
+	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal, bool waitForProducer);
 
 	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
 

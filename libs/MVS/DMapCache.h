@@ -75,6 +75,8 @@ public:
 	// depth-data empty (IsEmpty()) and out of the cache. Thread-safe for distinct images; the
 	// load runs unlocked, so concurrent calls for the SAME image must be serialized by the caller
 	bool UseImage(IIndex idxImage) const;
+	// Use only after the depth-map producer phase has joined.
+	bool UseImage(IIndex idxImage, bool waitForProducer) const;
 
 	// get the image indices loaded in cache.
 	IIndexArr GetCachedImageIndices(bool ordered = false) const;
