@@ -2477,7 +2477,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	PointCloud::ViewArr fusedViews;
 	FloatArr fusedWeights;
 	Point3d fusedNormal;
-	Pixel32F fusedColor;
+	Pixel32F fusedColor(Pixel32F::BLACK);
 	// contradiction guard of the keep-rule (see OPTDENSE::nFuseViolationMax): the DISTINCT views that
 	// contradict the point being accumulated -- fusedContraViews see a surface well behind it
 	// (free-space violation) or agree with its depth and reprojection but dispute its normal, the
