@@ -73,7 +73,7 @@ bool ImageCache::Prefetch(const IIndexArr& idxImages) {
 	}
 	bool bSuccess(true);
 	#ifdef _USE_OPENMP
-	#pragma omp parallel for shared(bSuccess)
+	#pragma omp parallel for reduction(&&:bSuccess)
 	#endif
 	for (int64_t i=0; i<(int64_t)numImages; ++i) {
 		Image32F imageGray;

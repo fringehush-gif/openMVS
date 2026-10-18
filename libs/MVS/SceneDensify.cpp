@@ -2029,7 +2029,7 @@ bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
 	ASSERT(images.size() == arrDepthData.size());
 	bool bSuccess(true);
 	#ifdef DENSE_USE_OPENMP
-	#pragma omp parallel for shared(bSuccess)
+	#pragma omp parallel for reduction(&&:bSuccess)
 	for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
 		Image& imageData = images[(IIndex)ID];
 		if (!arrDepthData[(IIndex)ID].IsValid())

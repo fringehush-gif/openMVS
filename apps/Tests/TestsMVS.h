@@ -37,6 +37,9 @@
 
 namespace MVS {
 
+// Concurrent prefetched image failures do not report success or lose valid decodes.
+bool ImageCachePrefetchFailureTest();
+
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
 // test the PLY codec: exact binary/ascii round trips, big-endian input, skipped data, malformed files

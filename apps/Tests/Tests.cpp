@@ -101,6 +101,10 @@ bool UnitTests()
 		VERBOSE("ERROR: wide string UTF-8 conversion failed!");
 		return false;
 	}
+	if (!MVS::ImageCachePrefetchFailureTest()) {
+		VERBOSE("ERROR: ImageCachePrefetchFailureTest failed!");
+		return false;
+	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;

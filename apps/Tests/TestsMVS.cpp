@@ -3503,4 +3503,67 @@ bool SelectNeighborViewsScaleTest()
 }
 /*----------------------------------------------------------------*/
 
+bool ImageCachePrefetchFailureTest()
+{
+	const auto fail = [](const char* detail) {
+		VERBOSE("ERROR: ImageCachePrefetchFailureTest: %s", detail);
+		return false;
+	};
+	const ScopedTempDir tmpDir(_T("ImageCachePrefetchFailureTest"));
+	if (!tmpDir.IsValid())
+		return fail("could not create temporary directory");
+
+	#ifdef _USE_OPENMP
+	struct OpenMPSettingsReset {
+		int threads{omp_get_max_threads()};
+		int dynamic{omp_get_dynamic()};
+		~OpenMPSettingsReset() { omp_set_num_threads(threads); omp_set_dynamic(dynamic); }
+	} openMPSettingsReset;
+	omp_set_dynamic(0);
+	omp_set_num_threads(4);
+	#endif
+
+	constexpr IIndex numImages(32);
+	constexpr unsigned width(16), height(16);
+	const String missingPath(tmpDir(_T("missing.png")));
+	ImageArr missingImages;
+	IIndexArr indices;
+	for (IIndex i = 0; i < numImages; ++i) {
+		Image& image(missingImages.AddEmpty());
+		image.name = missingPath;
+		image.width = width;
+		image.height = height;
+		indices.AddEmpty() = i;
+	}
+	{
+		ImageCache cache(missingImages, ImageCache::ComputeMemorySize(missingImages, indices));
+		if (cache.Prefetch(indices))
+			return fail("all-missing inputs reported success");
+	}
+
+	const String validPath(tmpDir(_T("valid.png")));
+	Image validImage;
+	validImage.image.create(cv::Size((int)width, (int)height));
+	validImage.image.setTo(cv::Scalar(64, 96, 128));
+	if (!validImage.image.Save(validPath))
+		return fail("could not write valid image fixture");
+
+	ImageArr mixedImages;
+	IIndexArr mixedIndices;
+	for (IIndex i = 0; i < numImages; ++i) {
+		Image& image(mixedImages.AddEmpty());
+		image.name = i < 8 ? validPath : missingPath;
+		image.width = width;
+		image.height = height;
+		mixedIndices.AddEmpty() = i;
+	}
+	ImageCache cache(mixedImages, ImageCache::ComputeMemorySize(mixedImages, mixedIndices));
+	if (cache.Prefetch(mixedIndices))
+		return fail("mixed valid and missing inputs reported success");
+	if (cache.GetNumImageReads() != 8)
+		return fail("successful decodes were not retained alongside failures");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 } // namespace MVS

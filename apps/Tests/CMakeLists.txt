@@ -10,6 +10,11 @@ ADD_DEFINITIONS(-D_DATA_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/")
 
 cxx_executable_with_flags(Tests "Apps" "${cxx_default}" "SFM;MVS" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
 
+# Compile internal cache implementations directly for focused cache tests.
+target_sources(Tests PRIVATE
+	"${PROJECT_SOURCE_DIR}/libs/MVS/ImageCache.cpp"
+	"${PROJECT_SOURCE_DIR}/libs/MVS/DMapCache.cpp")
+
 # Install
 INSTALL(TARGETS Tests
 	EXPORT OpenMVSTargets
