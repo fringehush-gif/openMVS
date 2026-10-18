@@ -37,6 +37,7 @@
 #include "DMapCache.h"
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
+#include "DepthMapSnapshotCache.h"
 
 using namespace MVS;
 
@@ -134,7 +135,6 @@ inline float Conf2Weight(float conf, Depth depth) {
 /*----------------------------------------------------------------*/
 
 // S T R U C T S ///////////////////////////////////////////////////
-
 
 DepthMapsData::DepthMapsData(Scene& _scene)
 	:
@@ -312,6 +312,14 @@ bool DepthMapsData::FetchViewImage(DepthData::ViewData& view)
 // returns false if there are no good neighbors to estimate the depth-map
 bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps)
 {
+	return InitViews(depthData, idxNeighbor, numNeighbors, loadImages, loadDepthMaps, NULL, NULL);
+}
+
+bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps,
+                              DepthMapSnapshotCache* snapshotCache, DepthMapSnapshotLeaseArr* snapshotLeases)
+{
+	ASSERT((snapshotCache == NULL) == (snapshotLeases == NULL));
+	ASSERT(snapshotLeases == NULL || snapshotLeases->empty());
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(!depthData.neighbors.IsEmpty());
 
@@ -419,10 +427,26 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				(HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL|HeaderDepthDataRaw::HAS_CONF) :
 				HeaderDepthDataRaw::HAS_DEPTH);
 			bool bConfAdjustedN(false);
-			if (!ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
+			bool bLoaded;
+			if (snapshotCache) {
+				const auto snapshot(snapshotCache->Load(view.GetID(), nLoadFlags));
+				bLoaded = bool(snapshot);
+				if (snapshot) {
+					view.cameraDepthMap.K = snapshot->camera.K;
+					view.cameraDepthMap.R = snapshot->camera.R;
+					view.cameraDepthMap.C = snapshot->camera.C;
+					view.depthMap = snapshot->depthMap;
+					normalMap = snapshot->normalMap;
+					confMap = snapshot->confMap;
+					bConfAdjustedN = snapshot->bConfAdjusted;
+					snapshotLeases->push_back(snapshot);
+				}
+			} else {
+				bLoaded = ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
-				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, nLoadFlags, &bConfAdjustedN))
-			{
+				                             dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, nLoadFlags, &bConfAdjustedN);
+			}
+			if (!bLoaded) {
 				// neighbor depth-maps are needed during geometric-consistency iterations;
 				// some views may have failed depth estimation, so their depth-map is missing
 				VERBOSE("warning: skipping neighbor view %u (%s): cannot load depth-map '%s'",
@@ -461,11 +485,24 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		Camera camera;
 		ConfidenceMap confMap;
 		ViewsMap viewsMap;
+		if (snapshotCache) {
+			const auto snapshot(snapshotCache->Load(viewRef.GetID(), HeaderDepthDataRaw::HAS_DEPTH | HeaderDepthDataRaw::HAS_NORMAL));
+			if (!snapshot)
+				return false;
+			camera = snapshot->camera;
+			depthData.dMin = snapshot->dMin;
+			depthData.dMax = snapshot->dMax;
+			// The estimator writes the reference maps; neighbor snapshots must
+			// retain the previous pass even when this reference is estimated first.
+			depthData.depthMap = snapshot->depthMap.clone();
+			depthData.normalMap = snapshot->normalMap.clone();
+		} else {
 		if (!ImportDepthDataRaw(ComposeDepthFilePath(viewRef.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, depthData.dMin, depthData.dMax,
 				depthData.depthMap, depthData.normalMap, confMap, viewsMap,
-				HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL))
+			                        HeaderDepthDataRaw::HAS_DEPTH | HeaderDepthDataRaw::HAS_NORMAL))
 			return false;
+		}
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
 		ASSERT(depthData.normalMap.empty() || viewRef.image.size() == depthData.normalMap.size());
 		if (depthData.normalMap.empty()) {
@@ -2949,7 +2986,7 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 // neighbor depth-maps and the packed depth+normal estimates
 unsigned DenseWorkerPoolSize(unsigned requested, unsigned maxWorkers,
 	const ImageArr& sceneImages, const IIndexArr& images, const DepthDataArr& arrDepthData,
-	size_t reservedMemory)
+                             size_t reservedMemory, bool bSnapshotCache)
 {
 	ASSERT(requested > 0 && maxWorkers > 0);
 	size_t area(0);
@@ -2969,9 +3006,15 @@ unsigned DenseWorkerPoolSize(unsigned requested, unsigned maxWorkers,
 	const size_t sizeEstimate(4*sizeof(float)); // packed depth+normal, as the backends stage it
 	const size_t hostImages(numViews * area * sizeof(float));
 	const size_t hostDepthMaps((numViews - 1) * area * sizeof(float));
+	const bool bNeighborConfidence(OPTDENSE::nEstimationGeometricIters && (OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && OPTDENSE::bEstimateConfidenceCUDA);
+	const size_t hostNeighborMaps(hostDepthMaps + (bNeighborConfidence ? (numViews - 1) * area * (sizeof(Normal) + sizeof(float)) : 0));
 	const size_t hostRefMaps(area * (sizeof(Depth) + sizeof(Normal) + sizeof(float) + sizeof(ViewsID)));
 	const size_t hostStaging(area * sizeEstimate + hostImages + hostDepthMaps);
-	const size_t hostWorker(2 * (hostImages + hostDepthMaps + hostRefMaps) + hostStaging);
+	// Uncached snapshots can remain leased while the reference clone is used.
+	// Imports unpack one plane at a time; packed normals are the largest scratch.
+	const size_t hostSnapshotRef(bSnapshotCache ? area * (sizeof(Depth) + sizeof(Normal)) : 0);
+	const size_t hostDecode(area * 2 * sizeof(int16_t));
+	const size_t hostWorker(2 * (hostImages + hostNeighborMaps + hostRefMaps + hostSnapshotRef) + hostStaging + hostDecode);
 	// what is free now, minus what the image cache may still fill with the images
 	// it has not decoded yet, is what the workers may share; leave the same
 	// safety margin the depth-map cache uses, both for the fusion that follows
@@ -3242,6 +3285,17 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				imageCache.GetMaxMemory()/1024/1024, allImagesMemory/1024/1024, TD_TIMER_GET_FMT().c_str());
 	}
 
+	size_t snapshotMemory(0);
+	if (OPTDENSE::nGeometricCacheMemory && OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0) {
+		const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+		const size_t reservedMemory(ComputeSafetyMemory(memInfo) + data.depthMaps.imageCache.GetFreeMemory());
+		const size_t availableMemory(memInfo.freePhysical > reservedMemory ? memInfo.freePhysical - reservedMemory : 0);
+		snapshotMemory = MINF(size_t(OPTDENSE::nGeometricCacheMemory) * 1024 * 1024, availableMemory / 4);
+		if (snapshotMemory) {
+			data.snapshotCache.reset(new DepthMapSnapshotCache(snapshotMemory));
+			data.snapshotLeases.resize(images.GetSize());
+		}
+	}
 	#if defined(_USE_CUDA) || defined(_USE_METAL)
 	// One PatchMatch instance per worker thread; host-side prep (image upload,
 	// depth-prior packing, result unpack) parallelizes across the worker pool while
@@ -3250,7 +3304,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	// the shared --gpu-device param (-1 GPU, -2/cpu/empty CPU).
 	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
 		const unsigned poolSize = (nMaxThreads > 1)
-			? DenseWorkerPoolSize(MAXF(OPTDENSE::nPatchMatchCUDAInstances, 1u), nMaxThreads, images, data.images, data.depthMaps.arrDepthData, data.depthMaps.imageCache.GetFreeMemory())
+		                              ? DenseWorkerPoolSize(MAXF(OPTDENSE::nPatchMatchCUDAInstances, 1u), nMaxThreads, images, data.images, data.depthMaps.arrDepthData, data.depthMaps.imageCache.GetFreeMemory() + snapshotMemory, snapshotMemory != 0)
 			: 1u;
 		#ifdef _USE_CUDA
 		const bool bAllocatedPool = data.depthMaps.AllocateCudaPool(poolSize);
@@ -3364,6 +3418,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			if (!data.events.IsEmpty())
 				return false;
 			data.progress.Release();
+			if (data.snapshotCache) {
+				ASSERT(std::all_of(data.snapshotLeases.begin(), data.snapshotLeases.end(), [](const auto& leases) { return leases.empty(); }));
+				data.snapshotCache->Reset();
+			}
 			// replace raw depth-maps with the geometric-consistent ones
 			for (IIndex idx: data.images) {
 				const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
@@ -3556,7 +3614,13 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				(bWillAdjustConf ? 2 : 1) : 0));
 			// initialize images pair: reference image and the best neighbor view
 			ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
-			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty()?NO_ID:data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, nLoadDepthMaps)) {
+			DepthMapSnapshotCache* snapshotCache(nLoadDepthMaps > 0 ? data.snapshotCache.get() : NULL);
+			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty() ? NO_ID : data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, nLoadDepthMaps,
+			                              snapshotCache, snapshotCache ? &data.snapshotLeases[idx] : NULL)) {
+				if (snapshotCache) {
+					depthData.ReleaseImages();
+					data.snapshotLeases[idx].clear();
+				}
 				// process next image
 				data.events.AddEvent(new EVTProcessImage((IIndex)Thread::safeInc(data.idxImage)));
 				break;
@@ -3713,6 +3777,8 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			}
 			depthData.ReleaseImages();
 			depthData.Release();
+			if (data.snapshotCache)
+				data.snapshotLeases[data.images[evtImage.idxImage]].clear();
 			data.progress->operator++();
 			// per-image save timing (gated at -v 2 so the default-verbose run
 			// is not dragged down by per-image logging when pool-size grows)

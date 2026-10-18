@@ -93,6 +93,10 @@ bool UnitTests()
 		VERBOSE("ERROR: TestConfidenceInterval failed!");
 		return false;
 	}
+	if (!MVS::DepthMapSnapshotCacheTest()) {
+		VERBOSE("ERROR: DepthMapSnapshotCacheTest failed!");
+		return false;
+	}
 	if (!SEACAVE::TestTetraFlow()) {
 		VERBOSE("ERROR: TestTetraFlow failed!");
 		return false;

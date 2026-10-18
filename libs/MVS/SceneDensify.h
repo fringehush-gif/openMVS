@@ -45,6 +45,9 @@ namespace MVS {
 
 // Forward declarations
 class MVS_API Scene;
+struct DepthMapSnapshot;
+class DepthMapSnapshotCache;
+typedef std::vector<std::shared_ptr<const DepthMapSnapshot>> DepthMapSnapshotLeaseArr;
 #ifdef _USE_CUDA
 namespace CUDA {
 class PatchMatch;
@@ -70,6 +73,8 @@ public:
 
 	bool SelectViews(DepthData& depthData);
 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
+	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps,
+	               DepthMapSnapshotCache* snapshotCache, DepthMapSnapshotLeaseArr* snapshotLeases);
 	bool FetchViewImage(DepthData::ViewData& view);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
@@ -178,6 +183,9 @@ public:
 
 struct MVS_API DenseDepthMapData {
 	Scene& scene;
+	// Previous-pass maps remain immutable until every estimator has joined.
+	std::unique_ptr<DepthMapSnapshotCache> snapshotCache;
+	std::vector<DepthMapSnapshotLeaseArr> snapshotLeases;
 	IIndexArr images;
 	IIndexArr neighborsMap;
 	DepthMapsData depthMaps;
@@ -206,6 +214,8 @@ struct MVS_API DenseDepthMapData {
 
 	DenseDepthMapData(Scene& _scene, int _nFusionMode=0, float _fSampleMeshNeighbors=0);
 	~DenseDepthMapData();
+	DenseDepthMapData(const DenseDepthMapData&) = delete;
+	DenseDepthMapData& operator=(const DenseDepthMapData&) = delete;
 
 	void SignalCompleteDepthmapFilter();
 };

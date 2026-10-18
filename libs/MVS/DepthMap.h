@@ -168,6 +168,7 @@ extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, ru
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;
+extern MVS_API unsigned nGeometricCacheMemory;
 extern MVS_API float fEstimationGeometricWeight;
 extern MVS_API unsigned nRandomIters;
 extern MVS_API unsigned nRandomMaxScale;

@@ -37,6 +37,13 @@
 #include "Tests.h"
 #include "TestsMVS.h"
 #include "../../libs/MVS/PatchMatchViewState.h"
+#include "../../libs/MVS/DepthMapSnapshotCache.h"
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstring>
+#include <filesystem>
+#include <thread>
 #include <halfmesh/RectPacking.h>
 
 
@@ -3742,5 +3749,242 @@ bool DMapCacheLoadFailureTest()
 	}
 	return true;
 }
+
+namespace {
+
+bool WriteDepthMapSnapshotFixture(const String& fileName, const String& imageFileName,
+                                  IIndex imageID, int width, int height, Depth depth,
+                                  bool withNormal, bool withConfidence, bool confAdjusted)
+{
+	ASSERT(!fileName.empty() && !imageFileName.empty());
+	ASSERT(imageID != NO_ID && width > 0 && height > 0);
+	KMatrix K(KMatrix::IDENTITY);
+	K(0, 0) = 100.5;
+	K(1, 1) = 101.25;
+	K(0, 2) = 3.5;
+	K(1, 2) = 2.25;
+	const RMatrix R(REAL(0.125), REAL(-0.25), REAL(0.5));
+	const CMatrix C(REAL(1.25), REAL(-2.5), REAL(0.75));
+	IIndexArr IDs(2);
+	IDs[0] = imageID;
+	IDs[1] = imageID + 3;
+	DepthMap depthMap;
+	depthMap.create(height, width);
+	depthMap.setTo(depth);
+	NormalMap normalMap;
+	ConfidenceMap confMap;
+	if (withNormal) {
+		normalMap.create(height, width);
+		normalMap.setTo(cv::Scalar(0, 0, 1));
+	}
+	if (withConfidence) {
+		confMap.create(height, width);
+		confMap.setTo(0.5f);
+	}
+	const cv::Size imageSize(width + 5, height + 3);
+	const ViewsMap viewsMap;
+	return ExportDepthDataRaw(fileName, imageFileName, IDs, imageSize, K, R, C,
+	                          Depth(1.25f), Depth(12.5f), depthMap, normalMap, confMap,
+	                          viewsMap, confAdjusted);
+}
+
+bool TruncateDepthMapSnapshotAfterDepth(const String& fileName)
+{
+	std::ifstream stream(fileName.c_str(), std::ios::binary);
+	if (!stream.is_open())
+		return false;
+	HeaderDepthDataRaw header;
+	stream.read((char*)&header, sizeof(header));
+	uint16_t imageFileNameSize(0);
+	stream.read((char*)&imageFileNameSize, sizeof(imageFileNameSize));
+	stream.seekg(imageFileNameSize, std::ios::cur);
+	uint32_t numIDs(0);
+	stream.read((char*)&numIDs, sizeof(numIDs));
+	stream.seekg(std::streamoff(sizeof(uint32_t)) * numIDs, std::ios::cur);
+	stream.seekg(std::streamoff(sizeof(double) * 21), std::ios::cur);
+	stream.seekg(std::streamoff(sizeof(uint16_t)) * header.depthWidth * header.depthHeight, std::ios::cur);
+	if (!stream)
+		return false;
+	const std::streampos endOfDepth(stream.tellg());
+	if (endOfDepth == std::streampos(-1))
+		return false;
+	stream.close();
+	std::error_code ec;
+	std::filesystem::resize_file(std::filesystem::path(fileName.c_str()),
+	                             static_cast<uintmax_t>(static_cast<std::streamoff>(endOfDepth)), ec);
+	return !ec;
+}
+
+} // namespace
+
+bool DepthMapSnapshotCacheTest()
+{
+	const ScopedTempDir tmpDir(_T("DepthMapSnapshotCacheTest"));
+	const auto fail = [](const char* detail) {
+		VERBOSE("ERROR: DepthMapSnapshotCacheTest: %s", detail);
+		return false;
+	};
+	if (!tmpDir.IsValid())
+		return fail("could not create temporary directory");
+	const unsigned depthFlags(HeaderDepthDataRaw::HAS_DEPTH);
+	const unsigned allMapFlags(HeaderDepthDataRaw::HAS_DEPTH | HeaderDepthDataRaw::HAS_NORMAL | HeaderDepthDataRaw::HAS_CONF);
+	const size_t oneSnapshotBytes(sizeof(DepthMap) + sizeof(NormalMap) + sizeof(ConfidenceMap) + size_t(8) * 8 * (sizeof(Depth) + sizeof(Normal) + sizeof(float)));
+	const String metadataPath(tmpDir(_T("metadata.dmap")));
+	const String metadataImage(tmpDir(_T("metadata.jpg")));
+	{
+		std::ofstream image(metadataImage.c_str(), std::ios::binary);
+		if (!image.is_open())
+			return fail("could not create image-name fixture");
+	}
+	if (!WriteDepthMapSnapshotFixture(metadataPath, metadataImage, 101, 8, 8, 5.f, true, true, true))
+		return fail("could not write metadata fixture");
+
+	// A neighbor borrow aliases the immutable snapshot; the writable reference map
+	// owns a clone, so an estimator write cannot alter what other workers observe.
+	{
+		DepthMapSnapshotCache cache(oneSnapshotBytes * 2);
+		const auto snapshot(cache.Load(metadataPath, 101, allMapFlags));
+		if (!snapshot)
+			return fail("metadata fixture did not load");
+		const String expectedImageName(MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(metadataPath)),
+		                                             Util::getFullPath(metadataImage)));
+		if (snapshot->imageFileName != expectedImageName || snapshot->IDs.GetSize() != 2 || snapshot->IDs[0] != 101 || snapshot->IDs[1] != 104 || snapshot->imageSize != cv::Size(13, 11) || !snapshot->bConfAdjusted || snapshot->depthMap.size() != cv::Size(8, 8) || snapshot->normalMap.size() != cv::Size(8, 8) || snapshot->confMap.size() != cv::Size(8, 8))
+			return fail("depth-map header metadata or requested planes did not round-trip");
+		KMatrix expectedK(KMatrix::IDENTITY);
+		expectedK(0, 0) = 100.5;
+		expectedK(1, 1) = 101.25;
+		expectedK(0, 2) = 3.5;
+		expectedK(1, 2) = 2.25;
+		const RMatrix expectedR(REAL(0.125), REAL(-0.25), REAL(0.5));
+		const CMatrix expectedC(REAL(1.25), REAL(-2.5), REAL(0.75));
+		if (std::memcmp(snapshot->camera.K.val, expectedK.val, sizeof(double) * 9) != 0 || std::memcmp(snapshot->camera.R.val, expectedR.val, sizeof(double) * 9) != 0 || snapshot->camera.C.x != expectedC.x || snapshot->camera.C.y != expectedC.y || snapshot->camera.C.z != expectedC.z || std::abs(snapshot->dMin - 1.25f * (1.f - 1.f / 1024.f)) > 1e-6f || std::abs(snapshot->dMax - 12.5f * (1.f + 1.f / 1024.f)) > 1e-5f || snapshot->depthMap.at<Depth>(0, 0) != 5.f || std::abs(snapshot->normalMap.at<Normal>(0, 0).z - 1.f) > 0.002f || std::abs(snapshot->confMap.at<float>(0, 0) - 0.5f) > 1.f / 255.f)
+			return fail("depth-map camera, range, or pixel metadata did not round-trip");
+		DepthMap neighborBorrow;
+		neighborBorrow = snapshot->depthMap;
+		DepthMap referenceClone;
+		referenceClone = snapshot->depthMap.clone();
+		if (neighborBorrow.data != snapshot->depthMap.data || referenceClone.data == snapshot->depthMap.data)
+			return fail("neighbor borrow and writable reference did not have the expected ownership");
+		referenceClone.at<Depth>(0, 0) = 17.f;
+		if (snapshot->depthMap.at<Depth>(0, 0) != 5.f || neighborBorrow.at<Depth>(0, 0) != 5.f)
+			return fail("writing the reference clone modified a borrowed snapshot");
+	}
+	if (!WriteDepthMapSnapshotFixture(metadataPath, metadataImage, 101, 8, 8, 9.f, true, true, false))
+		return fail("could not replace the reset-generation fixture");
+	{
+		DepthMapSnapshotCache cache(oneSnapshotBytes * 2);
+		{
+			const auto snapshot(cache.Load(metadataPath, 101, allMapFlags));
+			if (!snapshot || snapshot->depthMap.at<Depth>(0, 0) != 9.f)
+				return fail("initial reset-generation snapshot did not load");
+		}
+		if (!WriteDepthMapSnapshotFixture(metadataPath, metadataImage, 101, 8, 8, 11.f, true, true, true))
+			return fail("could not replace the snapshot before reset");
+		cache.Reset();
+		const auto nextGeneration(cache.Load(metadataPath, 101, allMapFlags));
+		if (!nextGeneration || nextGeneration->depthMap.at<Depth>(0, 0) != 11.f || !nextGeneration->bConfAdjusted)
+			return fail("Reset returned a snapshot from the previous file generation");
+	}
+
+	const String image1(tmpDir(_T("image1.jpg"))), image2(tmpDir(_T("image2.jpg"))), image3(tmpDir(_T("image3.jpg")));
+	const String map1(tmpDir(_T("map1.dmap"))), map2(tmpDir(_T("map2.dmap"))), map3(tmpDir(_T("map3.dmap")));
+	if (!WriteDepthMapSnapshotFixture(map1, image1, 201, 8, 8, 21.f, true, true, false) || !WriteDepthMapSnapshotFixture(map2, image2, 202, 8, 8, 22.f, true, true, false) || !WriteDepthMapSnapshotFixture(map3, image3, 203, 8, 8, 23.f, true, true, false))
+		return fail("could not write eviction fixtures");
+	{
+		DepthMapSnapshotCache cache(oneSnapshotBytes * 2);
+		auto first(cache.Load(map1, 201, allMapFlags));
+		auto second(cache.Load(map2, 202, allMapFlags));
+		if (!first || !second || cache.Load(map1, 201, allMapFlags).get() != first.get())
+			return fail("cache hit did not preserve the recently used snapshot");
+		auto uncachedA(cache.Load(map3, 203, allMapFlags));
+		auto uncachedB(cache.Load(map3, 203, allMapFlags));
+		if (!uncachedA || !uncachedB || uncachedA.get() == uncachedB.get())
+			return fail("fully pinned capacity did not fall back to uncached snapshots");
+		second.reset();
+		uncachedA.reset();
+		uncachedB.reset();
+		auto admitted(cache.Load(map3, 203, allMapFlags));
+		auto admittedHit(cache.Load(map3, 203, allMapFlags));
+		if (!admitted || admittedHit.get() != admitted.get())
+			return fail("released least-recently-used entry was not evicted to admit a new map");
+		if (!WriteDepthMapSnapshotFixture(map2, image2, 202, 8, 8, 32.f, true, true, false))
+			return fail("could not update the evicted fixture");
+		const auto reloaded(cache.Load(map2, 202, allMapFlags));
+		if (!reloaded || reloaded->depthMap.at<Depth>(0, 0) != 32.f)
+			return fail("released least-recently-used entry remained resident");
+	}
+
+	// A failed read is not cached. A depth-only read skips optional planes even
+	// when their advertised payload is truncated; requesting those planes fails.
+	const String recoveredPath(tmpDir(_T("recovered.dmap"))), recoveredImage(tmpDir(_T("recovered.jpg")));
+	{
+		DepthMapSnapshotCache cache(1);
+		if (cache.Load(recoveredPath, 301, depthFlags))
+			return fail("missing depth-map file unexpectedly loaded");
+		if (!WriteDepthMapSnapshotFixture(recoveredPath, recoveredImage, 301, 8, 8, 31.f, false, false, false))
+			return fail("could not write the missing-file recovery fixture");
+		const auto recovered(cache.Load(recoveredPath, 301, depthFlags));
+		if (!recovered || recovered->depthMap.at<Depth>(0, 0) != 31.f)
+			return fail("missing-file failure poisoned a later load");
+	}
+	const String truncatedPath(tmpDir(_T("truncated.dmap"))), truncatedImage(tmpDir(_T("truncated.jpg")));
+	if (!WriteDepthMapSnapshotFixture(truncatedPath, truncatedImage, 302, 8, 8, 32.f, true, true, false) || !TruncateDepthMapSnapshotAfterDepth(truncatedPath))
+		return fail("could not create a truncated optional-plane fixture");
+	{
+		DepthMapSnapshotCache cache(1);
+		const auto depthOnly(cache.Load(truncatedPath, 302, depthFlags));
+		if (!depthOnly || depthOnly->depthMap.empty() || !depthOnly->normalMap.empty() || !depthOnly->confMap.empty())
+			return fail("depth-only request did not skip truncated optional planes");
+		if (cache.Load(truncatedPath, 302, allMapFlags))
+			return fail("request for truncated optional planes unexpectedly succeeded");
+	}
+
+	// Start several readers together and verify they converge on one cached
+	// snapshot. Calls that arrive after the first decode may use its cache hit.
+	const String concurrentPath(tmpDir(_T("concurrent.dmap"))), concurrentImage(tmpDir(_T("concurrent.jpg")));
+	if (!WriteDepthMapSnapshotFixture(concurrentPath, concurrentImage, 401, 1024, 1024, 41.f, false, false, false))
+		return fail("could not write concurrent-miss fixture");
+	{
+		DepthMapSnapshotCache cache(size_t(1024) * 1024 * sizeof(Depth) + 1024);
+		const unsigned nReaders(8);
+		std::mutex startMutex;
+		std::condition_variable startChanged;
+		unsigned ready(0);
+		bool start(false);
+		std::vector<DepthMapSnapshotCache::SnapshotPtr> results(nReaders);
+		std::vector<std::thread> workers;
+		workers.reserve(nReaders);
+		for (unsigned i = 0; i < nReaders; ++i) {
+			workers.emplace_back([&, i]() {
+				{
+					std::lock_guard<std::mutex> lock(startMutex);
+					++ready;
+				}
+				startChanged.notify_all();
+				{
+					std::unique_lock<std::mutex> lock(startMutex);
+					startChanged.wait(lock, [&]() { return start; });
+				}
+				results[i] = cache.Load(concurrentPath, 401, depthFlags);
+			});
+		}
+		bool allReady(false);
+		{
+			std::unique_lock<std::mutex> lock(startMutex);
+			allReady = startChanged.wait_for(lock, std::chrono::seconds(10), [&]() { return ready == nReaders; });
+			start = true;
+		}
+		startChanged.notify_all();
+		for (std::thread& worker : workers)
+			worker.join();
+		if (!allReady)
+			return fail("concurrent readers did not reach the start gate");
+		for (unsigned i = 0; i < nReaders; ++i)
+			if (!results[i] || results[i].get() != results[0].get())
+				return fail("concurrent cache readers did not converge on one decoded snapshot");
+	}
+	return true;
+}
+
 
 } // namespace MVS
