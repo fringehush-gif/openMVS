@@ -170,6 +170,7 @@ extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;
 extern MVS_API unsigned nPatchMatchCUDAImageCacheMemory;
 extern MVS_API unsigned nGeometricCacheMemory;
+extern MVS_API bool bPatchMatchRestoreTopKPerImage;
 extern MVS_API float fEstimationGeometricWeight;
 extern MVS_API unsigned nRandomIters;
 extern MVS_API unsigned nRandomMaxScale;

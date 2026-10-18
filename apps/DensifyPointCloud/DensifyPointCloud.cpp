@@ -141,6 +141,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nPatchMatchCUDAInstances;
 	unsigned nPatchMatchCUDAImageCacheMemory;
 	unsigned nGeometricCacheMemory;
+	bool bPatchMatchRestoreTopKPerImage;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
 	unsigned nFuseFilter;
@@ -171,6 +172,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("patch-match-cuda-instances", boost::program_options::value(&nPatchMatchCUDAInstances)->default_value(4), "number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)")
 		("patch-match-cuda-image-cache-memory", boost::program_options::value(&nPatchMatchCUDAImageCacheMemory)->default_value(0), "maximum retained CUDA photo cache memory in MiB, with the same cap for host and device allocations (0 - disabled)")
 		("geometric-cache-memory", boost::program_options::value(&nGeometricCacheMemory)->default_value(0), "maximum decoded previous-pass depth-map cache memory in MiB (0 - disabled)")
+		("patch-match-restore-topk-per-image", boost::program_options::value(&bPatchMatchRestoreTopKPerImage)->default_value(false)->implicit_value(true), "restore configured PatchMatch K for each reference image (default 0 keeps upstream behavior: a lower K after a small-neighbor image carries forward)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
@@ -285,6 +287,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nPatchMatchCUDAInstances = nPatchMatchCUDAInstances;
 	OPTDENSE::nPatchMatchCUDAImageCacheMemory = nPatchMatchCUDAImageCacheMemory;
 	OPTDENSE::nGeometricCacheMemory = nGeometricCacheMemory;
+	if (OPT::vm.count("patch-match-restore-topk-per-image") &&
+		!OPT::vm["patch-match-restore-topk-per-image"].defaulted())
+		OPTDENSE::bPatchMatchRestoreTopKPerImage = bPatchMatchRestoreTopKPerImage;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	OPTDENSE::nFuseFilter = nFuseFilter;

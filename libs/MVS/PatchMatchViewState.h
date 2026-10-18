@@ -22,12 +22,16 @@ namespace MVS {
 namespace CUDA {
 
 // Host-only per-image transition shared by production and CUDA-free native tests.
-// requestedTopK is the caller configuration, never a previous image's clamped K.
-inline void SetPatchMatchViewCount(int numViews, int requestedTopK, int& currentNumViews, int& currentTopK)
+// Restore mode starts from configured K; default mode carries the prior per-image clamp.
+inline void SetPatchMatchViewCount(int numViews, int requestedTopK, bool restoreRequestedTopK,
+	int& currentNumViews, int& currentTopK)
 {
 	ASSERT(numViews > 0 && requestedTopK > 0);
+	if (!restoreRequestedTopK)
+		ASSERT(currentTopK > 0);
+	const int topK = restoreRequestedTopK ? requestedTopK : currentTopK;
 	currentNumViews = numViews;
-	currentTopK = std::min(requestedTopK, currentNumViews);
+	currentTopK = std::min(topK, currentNumViews);
 	ASSERT(currentTopK > 0 && currentTopK <= currentNumViews);
 }
 
@@ -38,7 +42,7 @@ inline Params MakePatchMatchUploadParams(const Params& configured)
 {
 	ASSERT(configured.nNumViews > 0 && configured.nInitTopK > 0);
 	Params effective(configured);
-	SetPatchMatchViewCount(configured.nNumViews, configured.nInitTopK,
+	SetPatchMatchViewCount(configured.nNumViews, configured.nInitTopK, true,
 		effective.nNumViews, effective.nInitTopK);
 	return effective;
 }

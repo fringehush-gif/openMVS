@@ -102,8 +102,11 @@ private:
 		std::vector<float*>& slots, std::vector<size_t>& areas, size_t slotIdx);
 
 public:
-	// nInitTopK is the requested K; nNumViews records the current image count.
+	// nInitTopK carries upstream's per-image clamp by default; the OPTDENSE restore option
+	// refreshes it from its configured value before each reference image.
 	Params params;
+	// Captured before the first image clamp; restore-mode configuration is fixed for this worker.
+	int requestedTopK = 0;
 
 	std::vector<cv::Mat1f> images;
 	std::vector<Camera> cameras;

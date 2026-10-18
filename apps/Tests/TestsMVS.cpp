@@ -63,21 +63,27 @@ bool PatchMatchTopKLifecycleTest()
 {
 	const int defaultTopK = 3;
 	ASSERT(defaultTopK > 0);
-	int reusedNumViews = 0;
-	int reusedTopK = defaultTopK;
-	// Exercise the shared production transition, without constructing a CUDA worker.
-	// Neighbor counts exclude the reference image. The middle image must not
-	// poison the next one: the old mutable minimum produced 3, 2, 2.
+	// Exercise both production modes without constructing a CUDA worker. Neighbor counts exclude
+	// the reference image: upstream carries its clamp (3, 2, 2), while opt-in restore returns to K.
 	const int counts[] = {8, 2, 4, 4, 1, 1, 8, 3, 2, 4};
-	const int expected[] = {3, 2, 3, 3, 1, 1, 3, 3, 2, 3};
-	for (size_t i = 0; i < sizeof(counts)/sizeof(counts[0]); ++i) {
-		CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, reusedNumViews, reusedTopK);
-		int freshNumViews = 0;
-		int freshTopK = defaultTopK;
-		CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, freshNumViews, freshTopK);
-		if (reusedNumViews != counts[i] || reusedTopK != expected[i] ||
-			reusedNumViews != freshNumViews || reusedTopK != freshTopK)
-			return false;
+	const int restoredExpected[] = {3, 2, 3, 3, 1, 1, 3, 3, 2, 3};
+	const int stickyExpected[] = {3, 2, 2, 2, 1, 1, 1, 1, 1, 1};
+	for (bool restoreRequestedTopK : {false, true}) {
+		int reusedNumViews = 0;
+		int reusedTopK = defaultTopK;
+		const int* expected = restoreRequestedTopK ? restoredExpected : stickyExpected;
+		for (size_t i = 0; i < sizeof(counts)/sizeof(counts[0]); ++i) {
+			CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, restoreRequestedTopK,
+				reusedNumViews, reusedTopK);
+			int freshNumViews = 0;
+			int freshTopK = defaultTopK;
+			CUDA::SetPatchMatchViewCount(counts[i], defaultTopK, restoreRequestedTopK,
+				freshNumViews, freshTopK);
+			if (reusedNumViews != counts[i] || reusedTopK != expected[i] ||
+				freshNumViews != counts[i] || freshTopK != std::min(defaultTopK, counts[i]) ||
+				(restoreRequestedTopK && reusedTopK != freshTopK))
+				return false;
+		}
 	}
 	// Match all production Params fields while keeping this test CUDA-free.
 	struct HostParams {
@@ -131,7 +137,7 @@ bool PatchMatchTopKLifecycleTest()
 			uploaded.fThresholdKeepCost != configured.fThresholdKeepCost)
 			return false;
 	}
-	VERBOSE("PatchMatchTopKLifecycleTest: requested configuration and effective upload state agree");
+	VERBOSE("PatchMatchTopKLifecycleTest: sticky default, opt-in restoration and upload snapshot agree");
 	return true;
 }
 
