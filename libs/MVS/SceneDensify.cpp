@@ -2568,16 +2568,16 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			const DepthData& depthData = arrDepthData[ID];
 			if (!Image8U::isInside(x, depthData.size))
 				return;
+			// ignore consumed pixels before accessing their depth
+			UseMask& useMask = arrUseMask[ID];
+			if (useMask(x))
+				return;
 			// ignore pixel if not estimated
 			ASSERT(depthData.depthMap.size() == depthData.size);
 			const Depth depth = depthData.depthMap(x);
 			if (depth <= Depth(0))
 				return;
 			ASSERT(ISINSIDE(depth, depthData.dMin * 0.95f, depthData.dMax * 1.05f));
-			// ignore pixel if already fused
-			UseMask& useMask = arrUseMask[ID];
-			if (useMask(x))
-				return;
 			// ignore pixel if not confident
 			const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
 			if (conf < (depthData.bConfAdjusted ? ConfRefine::FUSE_MIN_CONF : minConfidenceRaw))
