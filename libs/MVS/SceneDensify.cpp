@@ -3512,6 +3512,11 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		&& false
 		#endif
 		);
+	// Estimation workers have joined. Preserve the integrated-confidence guard
+	// before releasing photo-cache owners and staging buffers for postprocessing.
+	#ifdef _USE_CUDA
+	data.depthMaps.pmCUDAPool.clear();
+	#endif
 	if (bIntegratedConfRan) {
 		if (data.nConfAdjustedCPU)
 			VERBOSE("Confidence-maps adjusted: %u depth-maps (%u on GPU, %u on CPU)",
@@ -3585,9 +3590,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 	// the estimation is done: hand the GPU pools' pinned staging and device buffers back before the
 	// fusion budgets its depth-map cache from the free memory
-	#ifdef _USE_CUDA
-	data.depthMaps.pmCUDAPool.clear();
-	#endif
 	#ifdef _USE_METAL
 	data.depthMaps.pmMetalPool.clear();
 	#endif
