@@ -1091,7 +1091,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
 		walk_stats_t stats{};
-		#pragma omp for schedule(dynamic)
+		#pragma omp for schedule(dynamic,64)
 		for (int64_t i=0; i<nVerts; ++i) {
 			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
