@@ -2776,11 +2776,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 							fusedPoints[1].GetMedian(),
 							fusedPoints[2].GetMedian()
 						);
-						ASSERT(fusedViews.size() == fusedWeights.size());
-						PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
-						for (float weight: fusedWeights)
-							weights.push_back(weight);
-						pointcloud.pointViews.emplace_back(fusedViews);
+						ASSERT(!fusedViews.empty() && fusedViews.size() == fusedWeights.size());
+						pointcloud.pointWeights.emplace_back(fusedWeights.Begin(), fusedWeights.End());
+						pointcloud.pointViews.emplace_back(fusedViews.Begin(), fusedViews.End());
 						if (bEstimateNormal)
 							pointcloud.normals.emplace_back(normalized(fusedNormal));
 						if (bEstimateColor)
