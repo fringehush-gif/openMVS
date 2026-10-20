@@ -2745,7 +2745,10 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		const size_t nNumPointsPrev(pointcloud.points.size());
 		for (int i=0; i<depthData.size.height; ++i) {
 			for (int j=0; j<depthData.size.width; ++j) {
-				FusePoint(idxImage, ImageRef(j,i), 0);
+				const ImageRef seed(j,i);
+				if (depthData.depthMap(seed) <= Depth(0) || useMask(seed))
+					continue;
+				FusePoint(idxImage, seed, 0);
 				// the intra-map prior of the seed pixel (j,i) contributes fractional virtual support: a seed
 				// lying on a locally coherent surface partially satisfies the view and pixel minimums, so an
 				// inlier that fusion would otherwise drop for want of cross-view confirmation is recovered.
