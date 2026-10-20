@@ -2563,6 +2563,42 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// hence bounded by nMaxPointsFuse too, and reset alongside fusedViews et al.
 	struct MapPixel { IIndex ID; ImageRef x; };
 	CLISTDEFIDX(MapPixel,IIndex) clusterMembers;
+
+	struct PreparedNeighbor
+	{
+		IIndex ID;
+		const Camera* pCamera;
+	};
+	struct ProjectionPacket
+	{
+		alignas(32) REAL p[12][4];
+// Keep the packet scratch out of each recursive fusion frame.
+#if defined(_MSC_VER)
+		__declspec(noinline)
+#elif defined(__GNUC__)
+		__attribute__((noinline))
+#endif
+		void
+		Project(const PointCloud::Point& X, ImageRef* pixels) const
+		{
+			ASSERT(pixels != nullptr);
+			alignas(32) float q[3][4];
+			for (unsigned row = 0; row < 3; ++row) {
+#if defined(_OPENMP) && _OPENMP >= 201307
+	#pragma omp simd
+#endif
+				for (unsigned lane = 0; lane < 4; ++lane)
+					q[row][lane] = (float)(p[row * 4][lane] * X.x + p[row * 4 + 1][lane] * X.y + p[row * 4 + 2][lane] * X.z + p[row * 4 + 3][lane]);
+			}
+			for (unsigned lane = 0; lane < 4; ++lane) {
+				const float invZ(INVERT(q[2][lane]));
+				pixels[lane] = ROUND2INT(Point2f(q[0][lane] * invZ, q[1][lane] * invZ));
+			}
+		}
+	};
+	std::vector<std::vector<PreparedNeighbor>> preparedNeighbors(arrDepthData.size());
+	std::vector<std::vector<ProjectionPacket>> projectionPackets(arrDepthData.size());
+	size_t plannedNeighbors(0), plannedGroups(0), packetSeedScans(0);
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
@@ -2653,14 +2689,19 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			if (++fuseDepth >= OPTDENSE::nMaxFuseDepth || fusedPoints[0].size() >= OPTDENSE::nMaxPointsFuse)
 				return;
 			// traverse the neighbors graph by projecting the point into other views
-			for (const ViewScore& neighbor : image.pImageData->neighbors) {
-				const IIndex nextID(neighbor.ID);
-				ASSERT(nextID != ID);
-				if (!neighbors[nextID])
-					continue;
-				const DepthData& nextDepthData = arrDepthData[nextID];
-				const ImageRef nextx(ROUND2INT(std::get<0>(nextDepthData.GetCamera().ProjectPointP(X))));
-				FusePointImpl(nextID, nextx, fuseDepth, FusePointImpl);
+			const auto& nextViews(preparedNeighbors[ID]);
+			ASSERT(projectionPackets[ID].size() == nextViews.size() / 4);
+			size_t nextIndex(0);
+			for (const ProjectionPacket& packet : projectionPackets[ID]) {
+				ImageRef pixels[4];
+				packet.Project(X, pixels);
+				for (unsigned lane = 0; lane < 4; ++lane, ++nextIndex)
+					FusePointImpl(nextViews[nextIndex].ID, pixels[lane], fuseDepth, FusePointImpl);
+			}
+			for (; nextIndex < nextViews.size(); ++nextIndex) {
+				const PreparedNeighbor& next(nextViews[nextIndex]);
+				const ImageRef nextx(ROUND2INT(std::get<0>(next.pCamera->ProjectPointP(X))));
+				FusePointImpl(next.ID, nextx, fuseDepth, FusePointImpl);
 			}
 		};
 		lambda(ID, x, fuseDepth, lambda);
@@ -2741,6 +2782,27 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			useMask.create(depthData.size);
 			useMask.memset(0);
 		}
+		for (IIndex ID = 0; ID < arrDepthData.size(); ++ID) {
+			auto& nextViews(preparedNeighbors[ID]);
+			auto& packets(projectionPackets[ID]);
+			nextViews.clear();
+			packets.clear();
+			if (!neighbors[ID])
+				continue;
+			nextViews.reserve(arrDepthData[ID].GetView().pImageData->neighbors.size());
+			for (const ViewScore& next : arrDepthData[ID].GetView().pImageData->neighbors) {
+				ASSERT(next.ID != ID);
+				if (neighbors[next.ID])
+					nextViews.push_back(PreparedNeighbor{next.ID, &arrDepthData[next.ID].GetCamera()});
+			}
+			packets.resize(nextViews.size() / 4);
+			plannedNeighbors += nextViews.size();
+			plannedGroups += packets.size();
+			for (size_t group = 0; group < packets.size(); ++group)
+				for (unsigned lane = 0; lane < 4; ++lane)
+					for (unsigned coefficient = 0; coefficient < 12; ++coefficient)
+						packets[group].p[coefficient][lane] = nextViews[group * 4 + lane].pCamera->P.val[coefficient];
+		}
 		// try to fuse each depth estimate
 		const size_t nNumPointsPrev(pointcloud.points.size());
 		for (int i=0; i<depthData.size.height; ++i) {
@@ -2811,6 +2873,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				}
 			}
 		}
+		if (!projectionPackets[idxImage].empty() && pointcloud.points.size() > nNumPointsPrev)
+			++packetSeedScans;
 		fusedDMaps[idxImage] = true;
 		mapReaders.ReleaseMaps(depthData, idxImage, arrUseMask);
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size());
@@ -2828,6 +2892,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	if (!_bEstimateNormal)
 		pointcloud.normals.Release();
 
+	DEBUG_EXTRA("Fusion projection plans: %zu neighbor entries, %zu four-view groups, %zu nonempty packet seed scans", plannedNeighbors, plannedGroups, packetSeedScans);
 	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%), %.2f hits in %.2f cached (%s)",
 		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,
