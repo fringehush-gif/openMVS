@@ -287,7 +287,7 @@ void ConfigurePhotoCache(size_t maxMemory)
 }
 
 PatchMatch::PatchMatch()
-	: cudaStream(0)
+	: depthNormalEstimates(nullptr), cudaStream(0)
 {
 	// initialize CUDA device if needed
 	if (SEACAVE::CUDA::devices.IsEmpty())
@@ -299,6 +299,8 @@ PatchMatch::PatchMatch()
 PatchMatch::~PatchMatch()
 {
 	Release();
+	if (depthNormalEstimates)
+		cudaFreeHost(depthNormalEstimates);
 	UnregisterPhotoCacheOwner();
 	if (cudaStream)
 		cudaStreamDestroy(cudaStream);
@@ -375,10 +377,6 @@ void PatchMatch::ReleaseCUDA()
 	cudaFree(cudaSelectedViews);
 	if (params.bGeomConsistency)
 		cudaFree(cudaTextureDepths);
-	if (depthNormalEstimates) {
-		cudaFreeHost(depthNormalEstimates);
-		depthNormalEstimates = NULL;
-	}
 }
 
 void PatchMatch::Init(bool bGeomConsistency)
@@ -394,14 +392,25 @@ void PatchMatch::Init(bool bGeomConsistency)
 
 void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 {
+	ASSERT(!image.empty());
+	ASSERT((depthNormalEstimates != nullptr) == (depthNormalEstimatesCapacity > 0));
 	const size_t num_images = images.size();
 	CUDA_CHECK(cudaMalloc((void**)&cudaTextureImages, sizeof(cudaTextureObject_t) * num_images));
 	if (params.bGeomConsistency)
 		CUDA_CHECK(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
 
 	const size_t size = image.size().area();
-	// pin estimates buffer so the H<->D copies on cudaStream run as true DMA-async without driver staging
-	CUDA_CHECK(cudaHostAlloc((void**)&depthNormalEstimates, sizeof(Point4) * size, cudaHostAllocDefault));
+	// Reuse the pinned estimates buffer across pyramid levels and reference images.
+	// The previous level/image has synchronized cudaStream before this point.
+	if (size > depthNormalEstimatesCapacity) {
+		if (depthNormalEstimates)
+			CUDA_CHECK(cudaFreeHost(depthNormalEstimates));
+		depthNormalEstimates = nullptr;
+		depthNormalEstimatesCapacity = 0;
+		CUDA_CHECK(cudaHostAlloc((void**)&depthNormalEstimates, sizeof(Point4) * size, cudaHostAllocDefault));
+		depthNormalEstimatesCapacity = size;
+	}
+	ASSERT(depthNormalEstimates && depthNormalEstimatesCapacity >= size);
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
 
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalCosts, sizeof(float) * size));

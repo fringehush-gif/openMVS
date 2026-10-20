@@ -113,6 +113,7 @@ public:
 	std::vector<cudaTextureObject_t> textureImages;
 	std::vector<cudaTextureObject_t> textureDepths;
 	Point4* depthNormalEstimates;
+	size_t depthNormalEstimatesCapacity = 0;
 
 	std::vector<cudaArray_t> cudaImageArrays;
 	std::vector<cudaArray_t> cudaDepthArrays;
