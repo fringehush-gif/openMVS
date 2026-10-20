@@ -62,9 +62,15 @@ static inline double logcombi(size_t k, size_t n)
 template<typename Type>
 static inline void makelogcombi_n(size_t n, std::vector<Type>& l)
 {
+	ASSERT(n < std::numeric_limits<size_t>::max());
 	l.resize(n+1);
-	for (size_t k = 0; k <= n; ++k)
-		l[k] = static_cast<Type>(logcombi(k,n));
+	l[0] = l[n] = static_cast<Type>(0.0);
+	// Reuse the same ordered prefix sum and the symmetry C(n,k) == C(n,n-k).
+	double r = 0.0;
+	for (size_t k = 1; k <= n/2; ++k) {
+		r += log10((double)(n-k+1))-log10((double)k);
+		l[k] = l[n-k] = static_cast<Type>(r);
+	}
 }
 
 /// tabulate logcombi(k,.)
