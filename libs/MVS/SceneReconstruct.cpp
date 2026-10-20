@@ -30,6 +30,7 @@
 */
 
 #include "Common.h"
+#include <cfenv>
 #include "Scene.h"
 #include "../Math/TetraFlow.h"
 // Delaunay: mesh reconstruction
@@ -938,9 +939,28 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			const size_t numEdges(numNodes + delaunay.number_of_vertices() + 1);
 			ASSERT(numEdges == delaunay.number_of_edges());
 			FloatArr distsSq(0, numEdges);
-			for (delaunay_t::Finite_edges_iterator ei=delaunay.finite_edges_begin(), eei=delaunay.finite_edges_end(); ei!=eei; ++ei) {
-				const cell_handle_t& c(ei->first);
-				distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
+			if (std::fegetround() != FE_TONEAREST) {
+				// Keep the reference subtraction orientation in directed rounding modes.
+				for (delaunay_t::Finite_edges_iterator ei=delaunay.finite_edges_begin(), eei=delaunay.finite_edges_end(); ei!=eei; ++ei) {
+					const cell_handle_t& c(ei->first);
+					distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
+				}
+			} else {
+				// Walk each vertex star once, rather than walking edge rings to deduplicate cells.
+				// Unique vertex ids own each finite edge; CGAL clears its serial visited flags.
+				std::vector<vertex_handle_t> adjacent;
+				adjacent.reserve(64);
+				for (delaunay_t::Finite_vertices_iterator vi=delaunay.finite_vertices_begin(), evi=delaunay.finite_vertices_end(); vi!=evi; ++vi) {
+					adjacent.clear();
+					delaunay.finite_adjacent_vertices(vi, std::back_inserter(adjacent));
+					ASSERT(!adjacent.empty());
+					const Point3f point(CGAL2MVS<float>(vi->point()));
+					for (const vertex_handle_t& neighbor: adjacent) {
+						ASSERT(!delaunay.is_infinite(neighbor));
+						if (neighbor->info().idx > vi->info().idx)
+							distsSq.Insert(normSq(point - CGAL2MVS<float>(neighbor->point())));
+					}
+				}
 			}
 			medianEdge = SQRT(distsSq.GetMedian());
 		}
