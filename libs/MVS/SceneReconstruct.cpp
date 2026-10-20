@@ -933,7 +933,11 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// finite edge lengths, square-rooted (median commutes with the square root, so this is
 		// the median length itself and the long-edge tail cannot pull it)
 		{
-			FloatArr distsSq(0, delaunay.number_of_edges());
+			// Euler's relation for the dimension-3 triangulation, including the infinite vertex/cells: E = V + C.
+			// Avoid walking every edge just to reserve the length workspace.
+			const size_t numEdges(numNodes + delaunay.number_of_vertices() + 1);
+			ASSERT(numEdges == delaunay.number_of_edges());
+			FloatArr distsSq(0, numEdges);
 			for (delaunay_t::Finite_edges_iterator ei=delaunay.finite_edges_begin(), eei=delaunay.finite_edges_end(); ei!=eei; ++ei) {
 				const cell_handle_t& c(ei->first);
 				distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
@@ -979,7 +983,12 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				graph.SourceCapacity(f.first->info()) = kInf;
 		}
 
-		DEBUG_EXTRA("Delaunay tetrahedralization completed: %u points -> %u vertices, %u (+%u) cells, %u (+%u) faces (%s)", numPoints, delaunay.number_of_vertices(), delaunay.number_of_finite_cells(), delaunay.number_of_cells()-delaunay.number_of_finite_cells(), delaunay.number_of_finite_facets(), delaunay.number_of_facets()-delaunay.number_of_finite_facets(), TD_TIMER_GET_FMT().c_str());
+		// Each infinite cell is a triangle of the hull; its edges give the infinite facets.
+		const size_t numInfiniteCells(hullFacets.size());
+		const size_t numInfiniteFacets(numInfiniteCells*3/2);
+		ASSERT(numInfiniteCells == numNodes-delaunay.number_of_finite_cells());
+		ASSERT(numInfiniteFacets == numNodes*2-delaunay.number_of_finite_facets());
+		DEBUG_EXTRA("Delaunay tetrahedralization completed: %u points -> %u vertices, %u (+%u) cells, %u (+%u) faces (%s)", numPoints, delaunay.number_of_vertices(), numNodes-numInfiniteCells, numInfiniteCells, numNodes*2-numInfiniteFacets, numInfiniteFacets, TD_TIMER_GET_FMT().c_str());
 	}
 
 	// for every camera-point ray intersect it with the tetrahedrons and
@@ -1278,7 +1287,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				(unsigned long long)walkStats.nSteps, (unsigned long long)walkStats.nCamRayDropped,
 				(unsigned long long)(walkStats.nCamWalkAborted+walkStats.nEndWalkAborted),
 				sceneMagnitude, sigma/kSigma);
-		DEBUG_EXTRA("Delaunay tetrahedras weighting completed: %u cells, %u faces (%s)", delaunay.number_of_cells(), delaunay.number_of_facets(), TD_TIMER_GET_FMT().c_str());
+		DEBUG_EXTRA("Delaunay tetrahedras weighting completed: %u cells, %u faces (%s)", delaunay.number_of_cells(), delaunay.number_of_cells()*2, TD_TIMER_GET_FMT().c_str());
 	}
 
 	// run graph-cut and extract the mesh
