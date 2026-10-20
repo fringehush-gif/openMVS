@@ -1254,18 +1254,35 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 			// count neighbors whose depth matches the fitted plane prediction (not just the center depth)
 			int nInl(0);
 			float sumE2(0);
-			for (int y=-1; y<=1; ++y) {
-				const int rr(r+y);
-				if (rr<0 || rr>=depthMap.rows) continue;
-				for (int x=-1; x<=1; ++x) {
-					if (x==0 && y==0) continue;
-					const int cc(c+x);
-					if (cc<0 || cc>=depthMap.cols) continue;
-					const Depth dN(depthMap(rr,cc));
-					if (dN <= 0) continue;
-					const float dpred(w + wx*x + wy*y);
-					const float e(ABS(dN-dpred)/w);
-					if (e < band) { ++nInl; sumE2 += SQUARE(e/band); }
+			const auto accumulate = [&](int rr, int cc, int x, int y) {
+				ASSERT(rr >= 0 && rr < depthMap.rows && cc >= 0 && cc < depthMap.cols);
+				ASSERT(x >= -1 && x <= 1 && y >= -1 && y <= 1 && (x != 0 || y != 0));
+				ASSERT(rr == r+y && cc == c+x && w > 0);
+				const Depth dN(depthMap(rr,cc));
+				if (dN <= 0) return;
+				const float dpred(w + wx*x + wy*y);
+				const float e(ABS(dN-dpred)/w);
+				if (e < band) { ++nInl; sumE2 += SQUARE(e/band); }
+			};
+			if (r > 0 && r+1 < depthMap.rows && c > 0 && c+1 < depthMap.cols) {
+				accumulate(r-1,c-1,-1,-1);
+				accumulate(r-1,c,   0,-1);
+				accumulate(r-1,c+1, 1,-1);
+				accumulate(r,  c-1,-1, 0);
+				accumulate(r,  c+1, 1, 0);
+				accumulate(r+1,c-1,-1, 1);
+				accumulate(r+1,c,   0, 1);
+				accumulate(r+1,c+1, 1, 1);
+			} else {
+				for (int y=-1; y<=1; ++y) {
+					const int rr(r+y);
+					if (rr<0 || rr>=depthMap.rows) continue;
+					for (int x=-1; x<=1; ++x) {
+						if (x==0 && y==0) continue;
+						const int cc(c+x);
+						if (cc<0 || cc>=depthMap.cols) continue;
+						accumulate(rr,cc,x,y);
+					}
 				}
 			}
 			if (nInl < 3)
