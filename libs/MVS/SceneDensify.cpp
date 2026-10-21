@@ -2727,6 +2727,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// fractional "virtual" view/pixel support so that an inlier lying on a locally coherent surface but
 	// confirmed by too few views/pixels is still kept (same prior used by AdjustConfidence); empty when off
 	const bool bUsePrior(OPTDENSE::fFusePriorWeight > 0);
+	// Each reference is fused once; keep only its newly computed full prior.
+	// Existing shared caches remain available to their other consumers.
+	ConfidenceMap fusionPrior;
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
 	while (true) {
@@ -2751,8 +2754,16 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		}
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
-		if (bUsePrior)
-			GetIntraMapPrior(depthData, true); // depth+normal coherence of every seed pixel, O(pixels); bParallel=true (serial caller, idle cores)
+		const ConfidenceMap* pPrior(nullptr);
+		if (bUsePrior) {
+			if (depthData.priorMap.empty()) {
+				ComputeIntraMapPrior(depthData, fusionPrior, true);
+				pPrior = &fusionPrior;
+			} else {
+				pPrior = &depthData.priorMap;
+			}
+			ASSERT(pPrior->size() == depthData.depthMap.size());
+		}
 		// make sure all neighbors are cached
 		neighbors.Memset(0);
 		neighbors[idxImage] = true;
@@ -2834,7 +2845,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// the prior measures agreement with same-depth-map neighbors, which nMinPixelsFuse explicitly
 				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
 				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
-				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
+				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * (*pPrior)(i,j) : 0.f);
 				bool bClusterKept(false);
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
