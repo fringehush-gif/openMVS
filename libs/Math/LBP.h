@@ -70,7 +70,7 @@ protected:
 	// the messages of every directed edge in two flat buffers (one value per label of its target
 	// node), allocated once the labels are final, at the first optimization
 	std::vector<EnergyType> oldMsgs, newMsgs;
-	FncSmoothCost fncSmoothCost;
+	FncSmoothCost fncSmoothCost = nullptr;
 	// >= 0 when fncSmoothCost is the Potts model with this cost (0 for two equal labels other than
 	// label 0, pottsCost otherwise): the messages then take O(labels) instead of O(labels^2)
 	EnergyType pottsCost = -1;
@@ -130,6 +130,12 @@ public:
 		#endif
 		for (int_t nodeID = 0; nodeID < (int_t)nodes.size(); ++nodeID)
 			energy += nodes[nodeID].dataCost;
+		return ComputePairwiseEnergy(energy);
+	}
+
+protected:
+	EnergyType ComputePairwiseEnergy(EnergyType energy) const {
+		ASSERT(edges.empty() || fncSmoothCost);
 		#ifdef LBP_USE_OPENMP
 		#pragma omp parallel for reduction(+:energy)
 		#endif
@@ -140,7 +146,8 @@ public:
 		return energy;
 	}
 
-	void Optimize(unsigned num_iterations) {
+	void UpdateMessages(unsigned num_iterations) {
+		ASSERT(oldMsgs.size() == newMsgs.size());
 		if (oldMsgs.empty()) {
 			size_t numMsgs(0);
 			for (DirectedEdge& edge: edges) {
@@ -231,23 +238,46 @@ public:
 			}
 			newMsgs.swap(oldMsgs);
 		}
+	}
+
+	void UpdateLabel(Node& node) const {
+		ASSERT(node.labels.size() == node.dataCosts.size());
+		EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
+		for (size_t j = 0; j < node.labels.size(); ++j) {
+			EnergyType energy(node.dataCosts[j]);
+			for (EdgeID idxIncomingEdge: node.incomingEdges)
+				energy += oldMsgs[edges[idxIncomingEdge].msgs+j];
+			if (minEnergy > energy) {
+				minEnergy = energy;
+				node.label = node.labels[j];
+				node.dataCost = node.dataCosts[j];
+			}
+		}
+	}
+
+	EnergyType OptimizeAndComputeUnary(unsigned num_iterations) {
+		ASSERT(oldMsgs.size() == newMsgs.size());
+		UpdateMessages(num_iterations);
+		EnergyType unaryEnergy(0);
 		#ifdef LBP_USE_OPENMP
-		#pragma omp parallel for
+		#pragma omp parallel for reduction(+:unaryEnergy)
 		#endif
 		for (int_t nodeID = 0; nodeID < (int_t)nodes.size(); ++nodeID) {
 			Node& node = nodes[nodeID];
-			EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
-			for (size_t j = 0; j < node.labels.size(); ++j) {
-				EnergyType energy(node.dataCosts[j]);
-				for (EdgeID idxIncomingEdge: node.incomingEdges)
-					energy += oldMsgs[edges[idxIncomingEdge].msgs+j];
-				if (minEnergy > energy) {
-					minEnergy = energy;
-					node.label = node.labels[j];
-					node.dataCost = node.dataCosts[j];
-				}
-			}
+			UpdateLabel(node);
+			unaryEnergy += node.dataCost;
 		}
+		return unaryEnergy;
+	}
+
+public:
+	void Optimize(unsigned num_iterations) {
+		UpdateMessages(num_iterations);
+		#ifdef LBP_USE_OPENMP
+		#pragma omp parallel for
+		#endif
+		for (int_t nodeID = 0; nodeID < (int_t)nodes.size(); ++nodeID)
+			UpdateLabel(nodes[nodeID]);
 	}
 
 	EnergyType Optimize() {
@@ -261,8 +291,7 @@ public:
 		while (true) {
 			TD_TIMER_STARTD();
 			const EnergyType last_energy(energy);
-			Optimize(1);
-			energy = ComputeEnergy();
+			energy = ComputePairwiseEnergy(OptimizeAndComputeUnary(1));
 			diff = last_energy - energy;
 			DEBUG_ULTIMATE("\t%2u. e: %g\td: %g\tt: %s", i, last_energy, diff, TD_TIMER_GET_FMT().c_str());
 			if (++i > 100 || diff == EnergyType(0))

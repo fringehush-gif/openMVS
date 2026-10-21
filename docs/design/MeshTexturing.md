@@ -60,6 +60,10 @@ belief propagation (`Math/LBP.h`):
   a running minimum. Energies follow the generic loop's order. Each worker normalizes its completed
   message slice before the implicit OpenMP barrier and buffer swap; no separate normalization pass
   scans the flat buffers.
+- Automatic LBP optimization accumulates unary energy while selecting each node's label,
+  then reduces pairwise edge energy separately. Both sums retain float arithmetic.
+  Fixed-iteration optimization only selects labels; standalone energy evaluation always
+  reads the current labels and data costs rather than a cached total.
 - The messages of all directed edges live in two flat buffers allocated when the optimization
   starts; each face's view list is released as soon as its data costs are in the inference, so
   the labeling never holds both (Ignatius peak 3.87 -> 3.44 GB, Truck 2.95 -> 2.73 GB, 4-5% faster).
