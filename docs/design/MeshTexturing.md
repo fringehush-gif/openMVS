@@ -60,6 +60,11 @@ belief propagation (`Math/LBP.h`):
   a running minimum. Energies follow the generic loop's order. Each worker normalizes its completed
   message slice before the implicit OpenMP barrier and buffer swap; no separate normalization pass
   scans the flat buffers.
+- Potts message updates group the outgoing edges of degree-1/2/3 nodes, sharing
+  source-label lookup and unary/incoming-message loads. Each outgoing message keeps
+  its weighted initialization and ordered incoming additions; all messages from its
+  recipient are excluded, including parallel edges. Larger-degree nodes use the
+  per-edge Potts path; generic smoothness stays edge-based. Scratch is per worker.
 - Automatic LBP optimization accumulates unary energy while selecting each node's label,
   then reduces pairwise edge energy separately. Both sums retain float arithmetic.
   Fixed-iteration optimization only selects labels; standalone energy evaluation always
