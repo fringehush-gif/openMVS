@@ -201,34 +201,27 @@ public:
 					}
 					for (const LabelID label1: labels1)
 						labelSlots[label1] = 0;
-					continue;
-				}
-				for (size_t j = 0; j < labels2.size(); ++j) {
-					const LabelID label2(labels2[j]);
-					EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
-					for (size_t k = 0; k < labels1.size(); ++k) {
-						const LabelID label1(labels1[k]);
-						EnergyType energy(nodes[edge.nodeID1].dataCosts[k] + fncSmoothCost(edge.nodeID1, edge.nodeID2, label1, label2) * edge.weight);
-						for (EdgeID idxIncomingEdge: nodes[edge.nodeID1].incomingEdges) {
-							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
-							if (pre_edge.nodeID1 == edge.nodeID2)
-								continue;
-							energy += oldMsgs[pre_edge.msgs+k];
+				} else {
+					for (size_t j = 0; j < labels2.size(); ++j) {
+						const LabelID label2(labels2[j]);
+						EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
+						for (size_t k = 0; k < labels1.size(); ++k) {
+							const LabelID label1(labels1[k]);
+							EnergyType energy(nodes[edge.nodeID1].dataCosts[k] + fncSmoothCost(edge.nodeID1, edge.nodeID2, label1, label2) * edge.weight);
+							for (EdgeID idxIncomingEdge: nodes[edge.nodeID1].incomingEdges) {
+								const DirectedEdge& pre_edge = edges[idxIncomingEdge];
+								if (pre_edge.nodeID1 == edge.nodeID2)
+									continue;
+								energy += oldMsgs[pre_edge.msgs+k];
+							}
+							if (minEnergy > energy)
+								minEnergy = energy;
 						}
-						if (minEnergy > energy)
-							minEnergy = energy;
+						newMsgs[edge.msgs+j] = minEnergy;
 					}
-					newMsgs[edge.msgs+j] = minEnergy;
 				}
-			}
-			newMsgs.swap(oldMsgs);
-			#ifdef LBP_USE_OPENMP
-			#pragma omp parallel for
-			#endif
-			for (int_t edgeID = 0; edgeID < (int_t)edges.size(); ++edgeID) {
-				const DirectedEdge& edge = edges[edgeID];
-				EnergyType* const msgs(oldMsgs.data()+edge.msgs);
-				const size_t numLabels(nodes[edge.nodeID2].labels.size());
+				EnergyType* const msgs(newMsgs.data()+edge.msgs);
+				const size_t numLabels(labels2.size());
 				EnergyType minMsg(std::numeric_limits<EnergyType>::max());
 				for (size_t j = 0; j < numLabels; ++j)
 					if (minMsg > msgs[j])
@@ -236,6 +229,7 @@ public:
 				for (size_t j = 0; j < numLabels; ++j)
 					msgs[j] -= minMsg;
 			}
+			newMsgs.swap(oldMsgs);
 		}
 		#ifdef LBP_USE_OPENMP
 		#pragma omp parallel for
