@@ -428,6 +428,10 @@ inline int checkEdges(const point_t& a, const point_t& b, const point_t& c, cons
 //  coplanar [out] : pointer to the 3 int array of indices of the edges coplanar with (s)
 // return -1 if there is no intersection or
 // the number of edges coplanar with the segment (0 = intersection inside the triangle)
+#if defined(__GNUC__) && !defined(__clang__)
+// Keep the no-FMA predicate chain inline beyond GCC's unit-growth limit.
+__attribute__((flatten))
+#endif
 int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 {
 	const point_t& a = t.vertex(0);
