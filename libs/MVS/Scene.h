@@ -251,11 +251,11 @@ public:
 	// Mesh texturing
 
 	// Optional local seam solver; the existing overload keeps this disabled.
-  // Opt-in native-grid CUDA scoring. -2: CPU, -1: auto, >=0: exact CUDA device.
-  // Unsupported masks/layouts/repeated explicit views stay CPU before launch.
-  bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
-    bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
-    int ignoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT, int optionalGpu);
+	// Opt-in native-grid CUDA scoring. -2: CPU, -1: auto, >=0: exact CUDA device.
+	// Unsupported masks/layouts/repeated explicit views stay CPU before launch.
+	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
+		bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
+		int ignoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT, int optionalGpu);
 	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
 		bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int ignoreMaskLabel, int maxTextureSize, const IIndexArr& views, bool bPoissonInteriorLDLT);
 	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras=0, float fOutlierThreshold=0.f, float fRatioDataSmoothness=0.3f,

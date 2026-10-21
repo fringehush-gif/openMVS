@@ -3,19 +3,23 @@
 #include "Common.h"
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace MVS { namespace CUDA {
-struct TextureTriangle {
+struct TextureTriangle
+{
 	float x[3], y[3], z[3], invArea;
 	int minX, minY, maxX, maxY;
 	uint32_t face, rank;
 };
-struct TextureCount {
+struct TextureCount
+{
 	uint32_t projected, visible;
 	float color[3];
 };
-struct TextureTiming {
+struct TextureTiming
+{
 	double totalMs, uploadMs, rasterMs, scoreMs, downloadMs;
 	uint64_t deviceBytes;
 };
@@ -35,7 +39,8 @@ namespace detail {
 // Group capacities become valid only after every member succeeds. This is also
 // exercised by native Tests with a deterministic failing allocator, without a
 // test switch or error-injection API in the production launcher.
-template<class Allocator> struct TextureStorage {
+template<class Allocator> struct TextureStorage
+{
 	Allocator& allocator;
 	TextureTriangle* triangles = nullptr;
 	TextureCount* counts = nullptr;
@@ -43,12 +48,15 @@ template<class Allocator> struct TextureStorage {
 	unsigned char* bgr = nullptr;
 	size_t triangleCapacity = 0, pixelCapacity = 0, colorCapacity = 0;
 	explicit TextureStorage(Allocator& a) : allocator(a) {}
-	template<class T> bool Replace(T*& pointer, size_t count) {
+	template<class T> bool Replace(T*& pointer, size_t count)
+	{
+		ASSERT(count > 0 && count <= std::numeric_limits<size_t>::max()/sizeof(T));
 		if (pointer && !allocator.Free(pointer)) return false;
 		pointer = nullptr;
 		return allocator.Allocate(reinterpret_cast<void**>(&pointer), count*sizeof(T));
 	}
-	bool Ensure(size_t trianglesNeeded, size_t pixels, size_t colorBytes) {
+	bool Ensure(size_t trianglesNeeded, size_t pixels, size_t colorBytes)
+	{
 		if (trianglesNeeded > triangleCapacity) {
 			triangleCapacity = 0;
 			if (!Replace(triangles, trianglesNeeded) || !Replace(counts, trianglesNeeded)) return false;
@@ -66,7 +74,8 @@ template<class Allocator> struct TextureStorage {
 		}
 		return true;
 	}
-	void Release() {
+	void Release()
+	{
 		if (triangles) allocator.Free(triangles);
 		if (counts) allocator.Free(counts);
 		if (keys) allocator.Free(keys);
@@ -75,13 +84,15 @@ template<class Allocator> struct TextureStorage {
 		triangleCapacity = pixelCapacity = colorCapacity = 0;
 	}
 };
-template<class Synchronize> struct TextureFailureDrain {
+template<class Synchronize> struct TextureFailureDrain
+{
 	Synchronize synchronize;
 	bool complete = false;
 	explicit TextureFailureDrain(Synchronize sync) : synchronize(sync) {}
 	~TextureFailureDrain() { if (!complete) synchronize(); }
 };
-inline bool TextureDeviceMatches(int bound, int requested) {
+inline bool TextureDeviceMatches(int bound, int requested)
+{
 	return bound < 0 || bound == requested;
 }
 } // namespace detail

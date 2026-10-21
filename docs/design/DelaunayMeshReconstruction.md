@@ -28,6 +28,14 @@ the point cloud carries `pointWeights`, in which case the weight is that view's 
 — the `ReconstructMesh` app implements `--constant-weight` by releasing `pointcloud.pointWeights`
 before calling into the library, so the library itself has no such switch.
 
+The insertion sort stores source indices instead of a second converted point array; graph storage
+is allocated after insertion. In a full-dimensional triangulation, cell/hull counts derive edge and
+facet counts without repeated topology walks. Median-edge collection visits each vertex star and collects each finite edge once
+from the endpoint with the smaller vertex ID; directed rounding retains CGAL's reference edge
+iterator. Visibility weighting dispatches spatially ordered vertices in dynamic batches of 64 under
+OpenMP, while ray votes retain their atomic updates and arithmetic. GCC predicate callers flatten
+the existing triangle predicate chain without changing its classification or contraction rules.
+
 **Scale.** `medianEdge`, the median length over all finite Delaunay edges, is measured once and
 used two ways:
 - **Canonical rescale** (`bCanonicalRescale`, `coord_rescale_t`): if `medianEdge` falls outside

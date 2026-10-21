@@ -34,6 +34,15 @@ For every view (in parallel, one view per thread):
    parallel after the view workers finish; other builds filter serially. Observation order
    within each face is preserved.
 
+With `--texture-cuda true`, eligible views use `TextureScoring::PrepareTriangles` and
+`CUDA::RunTextureCUDA` (`TextureScoring.h`, `TextureCUDA.cu`) for the same native-resolution
+visibility counts and ordered BGR sums. CPU projection supplies triangle coordinates and traversal
+ranks; a depth/rank key resolves nearest depth and first-rank ties. A serialized workspace retains
+allocations on one device and restores the caller's device after each operation. CPU scoring remains
+the default. Repeated explicit views, partial validity masks, non-contiguous images and unsupported
+host arithmetic or projection ranges select CPU before device work starts. An attempted CUDA
+operation that fails aborts the stage after workers join; it does not retry on CPU.
+
 ### 2.2 View selection (`MeshTexture::FaceViewSelection`)
 
 A labeling over the face adjacency graph (label 0 = no view, label i+1 = view i), solved by loopy
@@ -47,11 +56,15 @@ belief propagation (`Math/LBP.h`):
 - `MaxEnergy = --cost-smoothness-ratio` (default 0.1) sets the data/smoothness balance.
 - The Potts model lets each LBP message be computed in O(labels) (`LBPInference::SetSmoothCostPotts`):
   the sender's energy for a label is one of two values (same label: smoothness 0, otherwise the Potts
-  cost), so the message of receiver label j is min(E0[j], min_k E1[k]); the energies are summed in the
-  generic loop's order, so the messages are bit-identical to the O(labels^2) loop.
+  cost), so the message of receiver label j is min(E0[j], min_k E1[k]). Only E0 is stored; E1 feeds
+  a running minimum. Energies follow the generic loop's order. Each worker normalizes its completed
+  message slice before the implicit OpenMP barrier and buffer swap; no separate normalization pass
+  scans the flat buffers.
 - The messages of all directed edges live in two flat buffers allocated when the optimization
   starts; each face's view list is released as soon as its data costs are in the inference, so
   the labeling never holds both (Ignatius peak 3.87 -> 3.44 GB, Truck 2.95 -> 2.73 GB, 4-5% faster).
+- Remaining-face grouping uses `TextureFaceIndex.h` to select and erase ordered ranks without
+  repeated linear searches or shifting; face order and RNG calls stay unchanged.
 - `--virtual-face-images` > 0 runs the same labeling on virtual faces (coplanar groups of faces
   sharing at least that many views) instead of individual faces.
 
@@ -69,8 +82,12 @@ patch, textured with `--empty-color`.
   iteration state; the correction is interpolated
   over each patch's triangles.
 - **Local seam leveling** (`LocalSeamLeveling`, `--local-seam-leveling`): Poisson blending of a strip
-  along each patch border so the border continues smoothly into the patch.
+  along each patch border so the border continues smoothly into the patch. `TextureSeamIndex.h`
+  builds patch-to-seam incidence once while preserving seam order. The optional
+  `--poisson-interior-ldlt` path factors only interior unknowns with prescribed border colors;
+  the existing solver remains the default, and floating-point colors can differ.
 - A patch whose rectangle lies inside another patch's rectangle of the same view joins it.
+  Removal updates the shifted owner's slot and UV offsets; patch zero and face order remain valid.
 
 ### 2.4 Atlas
 
@@ -106,6 +123,8 @@ faces around it; images are released as soon as their faces are consumed.
 | `--resolution-level` / `--min-resolution` | 0 / 640 | working image resolution |
 | `--outlier-threshold` | 0.06 | colour-outlier view removal (0 disables) |
 | `--cost-smoothness-ratio` | 0.1 | data vs. smoothness balance of the labeling |
+| `--texture-cuda` | false | opt in to native-grid CUDA visibility/scoring |
+| `--cuda-device` | -1 | automatic CUDA selection; -2 CPU, nonnegative exact device; used with `--texture-cuda` |
 | `--virtual-face-images` | 0 | label virtual faces of coplanar triangles (0 disables) |
 | `--global-seam-leveling` / `--local-seam-leveling` | 1 / 1 | seam colour leveling |
 | `--poisson-interior-ldlt` | false | interior-only factorization with prescribed border colors; floating-point results can change |
@@ -116,6 +135,10 @@ faces around it; images are released as soon as their faces are consumed.
 | `--empty-color` | 0x00FF7F27 | colour of faces no view sees |
 | `--sharpness-weight` | 0 | unsharp-mask weight |
 | `--remove-unseen-faces` | 0 | drop faces seen by fewer than N images before texturing |
+
+Explicit PNG options use `TImage::Save(fileName, compression, buffered)`; the existing one-argument
+image save keeps its format defaults. Native unit tests cover all eight combinations of compression
+levels 0, 2, 6 and 9 with buffering on/off and exact decoded BGR pixels.
 
 Fixed: full-resolution raster, partial-visibility threshold 90% / 2 px and factor 0.1, per-face
 candidate cut-off 0.2, LBP min edge weight 0.5, global leveling lambda 0.1.
@@ -133,10 +156,11 @@ Hold-out bench `bench/eval_texture.py`: the refined mesh of each scene textured 
 left out, the textured mesh ray-cast into the held-out cameras and compared with the photos (T&T:
 only the surface inside the evaluation crop; faces a run leaves unseen are excluded for every arm).
 
-| hold-out PSNR / SSIM | HJ8 | F11 | HJ25 | Ignatius |
+| current-default metric (hold-out) | HJ8 | F11 | HJ25 | Ignatius |
 |---|---|---|---|---|
-| previous defaults (gradient data term, 2x raster, sharpening 0.5) | 25.84 / .9088 | 28.25 / .9332 | 24.15 / .8811 | 16.81 / .7234 |
-| current defaults | 26.55 / .9222 | 28.80 / .9451 | 24.52 / .8989 | 17.47 / .7527 |
+| PSNR / SSIM | 26.55 / .9222 | 28.80 / .9451 | 24.52 / .8989 | 17.47 / .7527 |
+| footprint atlas | 32 MT | 32 MT | 32 MT | 32 MT |
+| triangle fill | 0.34 | 0.36 | 0.57 | 0.26 |
 
 Why the current defaults win: the visible-pixel count is the texture resolution a view actually
 delivers, so it ranks views by distance and obliqueness without a separate gradient or angle term.
@@ -146,13 +170,8 @@ than whatever the smoothness term prefers. The partial-visibility penalty stops 
 that sees most of a face from copying the occluder into the rest of it. The raster runs at the
 resolution the texture is sampled from; the 2x raster only raised the peak RAM (below).
 
-TextureMesh peak RAM (HJ25 hold-out): 2.5-3.0 GB vs 5.8 GB with the 2x raster.
+TextureMesh peak RAM (HJ25 hold-out): 2.5-3.0 GB.
 
-| atlas (hold-out runs) | HJ8 | F11 | HJ25 | Ignatius |
-|---|---|---|---|---|
-| square pages of patch rectangles | 64 MT | 64 MT | 64 MT | 64 MT |
-| footprint packing (current) | 32 MT | 32 MT | 32 MT | 32 MT |
-| triangle fill, current | 0.34 | 0.36 | 0.57 | 0.26 |
 
 Footprints halve the atlas because a patch's bounding rectangle is mostly empty for any patch that is
 not a compact blob, and footprints may interlock where rectangles may not. Same PSNR at full
@@ -162,8 +181,7 @@ patches); the atlas stage takes the same time (HJ25 9.0 s vs 9.3 s, Ignatius 8.7
 ## 6. Rejected alternatives
 
 - Gradient-magnitude data term (blurred Sobel x cos^2, global 95th-percentile normalization):
-  replaced, see §5; each of its replacements' parts alone measured worse except the partial-visibility
-  penalty.
+  lower hold-out quality than visible-pixel scoring (§5).
 - Crease-aware seam cost (edge weight x (1+n_a.n_b)/2): HJ8 -0.08 dB.
 - Multiplicative, ratio-gated global seam leveling in log-RGB: HJ8 +0.05, F11 -0.09, HJ25 -0.2 dB.
 - Merging same-view patches whose rectangles overlap (not only contained ones): -4% patch pixels but

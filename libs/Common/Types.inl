@@ -3085,6 +3085,38 @@ bool TImage<TYPE>::Save(const String& fileName) const
 {
 	return SaveImage(*this, fileName);
 }
+
+template <typename TYPE>
+bool TImage<TYPE>::Save(const String& fileName, int nPNGCompression, bool bBuffered) const
+{
+	ASSERT(!Base::empty() && Base::dims == 2);
+	ASSERT(nPNGCompression >= 0 && nPNGCompression <= 9);
+	ASSERT(Util::getFileExt(fileName).ToLower() == _T(".png"));
+	try {
+		if (!bBuffered) {
+			Util::ensureFolder(fileName);
+			return cv::imwrite(fileName, *this, {cv::IMWRITE_PNG_COMPRESSION, nPNGCompression});
+		}
+		std::vector<uchar> buffer;
+		if (!cv::imencode(".png", *this, buffer, {cv::IMWRITE_PNG_COMPRESSION, nPNGCompression}))
+			return false;
+		Util::ensureFolder(fileName);
+		File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
+		if (!file.isOpen())
+			return false;
+		const size_t BLOCK_SIZE(1024 * 1024);
+		for (size_t offset = 0; offset < buffer.size();) {
+			const size_t size(MINF(BLOCK_SIZE, buffer.size() - offset));
+			if (file.write(buffer.data() + offset, size) != size)
+				return false;
+			offset += size;
+		}
+	} catch (const cv::Exception& ex) {
+		VERBOSE("error: saving PNG image '%s' (exception: %s)", fileName.c_str(), ex.what());
+		return false;
+	}
+	return true;
+}
 /*----------------------------------------------------------------*/
 
 #ifndef _RELEASE

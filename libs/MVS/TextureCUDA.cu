@@ -4,18 +4,19 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
-#include <cstdio>
 #include <mutex>
 
 namespace MVS { namespace CUDA {
 namespace {
-__device__ float Edge(float ax, float ay, float bx, float by, float px, float py) {
+__device__ float Edge(float ax, float ay, float bx, float by, float px, float py)
+{
 	// cv::Point_<float> rounds the differences, then cross() widens to double.
 	const double dx=double(__fsub_rn(px,ax)), dy=double(__fsub_rn(py,ay));
 	const double ex=double(__fsub_rn(bx,ax)), ey=double(__fsub_rn(by,ay));
 	return __double2float_rn(__dsub_rn(__dmul_rn(dx,ey),__dmul_rn(dy,ex)));
 }
-__device__ bool DepthAt(const TextureTriangle& t, int x, int y, float& depth) {
+__device__ bool DepthAt(const TextureTriangle& t, int x, int y, float& depth)
+{
 	// Device assertions use CUDA's builtin; project ASSERT is host-only.
 	assert(x>=t.minX && x<=t.maxX && y>=t.minY && y<=t.maxY);
 	const float b0=__fmul_rn(Edge(t.x[1],t.y[1],t.x[2],t.y[2],x,y),t.invArea);
@@ -34,7 +35,8 @@ __device__ bool DepthAt(const TextureTriangle& t, int x, int y, float& depth) {
 	return true;
 }
 __global__ void Raster(const TextureTriangle* triangles, TextureCount* counts,
-	uint64_t* keys, int width) {
+	uint64_t* keys, int width)
+{
 	const int i=blockIdx.x;
 	const TextureTriangle t=triangles[i];
 	const int boxWidth=t.maxX-t.minX+1;
@@ -57,7 +59,8 @@ __global__ void Raster(const TextureTriangle* triangles, TextureCount* counts,
 }
 __global__ void Collect(const TextureTriangle* triangles, int count,
 	const uint64_t* keys, int width, float scaleX, float scaleY, int imageWidth,
-	const unsigned char* bgr, TextureCount* counts) {
+	const unsigned char* bgr, TextureCount* counts)
+{
 	const int i=blockIdx.x*blockDim.x+threadIdx.x;
 	if (i>=count) return;
 	const TextureTriangle t=triangles[i];
@@ -77,15 +80,17 @@ __global__ void Collect(const TextureTriangle* triangles, int count,
 	counts[i].visible=visible;
 	for (int c=0;c<3;++c) counts[i].color[c]=color[c];
 }
-bool Checked(cudaError_t result, const char* operation) {
+bool Checked(cudaError_t result, const char* operation)
+{
 	ASSERT(operation);
 	if (result==cudaSuccess) return true;
-	std::fprintf(stderr,"Texture CUDA %s: %s\n",operation,cudaGetErrorString(result));
+	VERBOSE("Texture CUDA %s: %s", operation, cudaGetErrorString(result));
 	return false;
 }
 struct Allocator {
 	bool Free(void* pointer) { ASSERT(pointer); return Checked(cudaFree(pointer),"free"); }
-	bool Allocate(void** pointer, size_t bytes) {
+	bool Allocate(void** pointer, size_t bytes)
+{
 		ASSERT(pointer && bytes>0); return Checked(cudaMalloc(pointer,bytes),"allocate");
 	}
 };
@@ -95,7 +100,8 @@ struct Workspace {
 	cudaEvent_t events[5]{};
 	Allocator allocator;
 	detail::TextureStorage<Allocator> storage{allocator};
-	~Workspace() {
+	~Workspace()
+{
 		if (device<0) return;
 		// Never free device-owned state under a foreign current context.
 		if (cudaSetDevice(device)!=cudaSuccess) return;
@@ -110,7 +116,8 @@ Workspace workspace;
 using Clock=std::chrono::steady_clock;
 } // namespace
 
-bool SelectTextureCUDADevice(int requested, int& selected) {
+bool SelectTextureCUDADevice(int requested, int& selected)
+{
 	ASSERT(requested>=-1);
 	int count=0;
 	if (!Checked(cudaGetDeviceCount(&count),"device count") || count==0) return false;
@@ -127,14 +134,16 @@ bool SelectTextureCUDADevice(int requested, int& selected) {
 		if (!Checked(cudaDeviceGetAttribute(&computeMode,cudaDevAttrComputeMode,device),"device compute mode")) return false;
 		const int64_t performance=int64_t(props.multiProcessorCount)*clockRate;
 		if (computeMode==cudaComputeModeProhibited || props.major<3 ||
-			(props.major==3 && props.minor<5)) {
+			(props.major==3 && props.minor<5))
+			{
 			if (requested>=0) return false;
 			continue;
 		}
 		if (selected<0 || props.major>best.major ||
 			(props.major==best.major && props.minor>best.minor) ||
 			(props.major==best.major && props.minor==best.minor &&
-			 performance>bestPerformance)) {
+			 performance>bestPerformance))
+			 {
 			selected=device; best=props; bestPerformance=performance;
 		}
 	}
@@ -144,7 +153,8 @@ bool SelectTextureCUDADevice(int requested, int& selected) {
 bool RunTextureCUDA(int width, int height, int imageWidth, int imageHeight,
 	const std::vector<TextureTriangle>& triangles, const unsigned char* bgr,
 	std::vector<TextureCount>& counts, TextureTiming& timing,
-	std::vector<uint64_t>* visibility, int device) {
+	std::vector<uint64_t>* visibility, int device)
+{
 	ASSERT(width>0 && height>0 && imageWidth>0 && imageHeight>0 && device>=-1);
 	ASSERT(uint64_t(width)*height<=INT_MAX && uint64_t(imageWidth)*imageHeight<=INT_MAX);
 	ASSERT(triangles.size()<INT_MAX);
@@ -160,7 +170,7 @@ bool RunTextureCUDA(int width, int height, int imageWidth, int imageHeight,
 	auto& w=workspace;
 	if (device<0 && w.device>=0) device=w.device;
 	if (!detail::TextureDeviceMatches(w.device,device)) {
-		std::fprintf(stderr,"Texture CUDA workspace bound to %d, requested %d\n",w.device,device);
+		VERBOSE("Texture CUDA workspace bound to %d, requested %d", w.device, device);
 		return false;
 	}
 	int selected=-1;

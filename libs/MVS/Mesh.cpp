@@ -714,38 +714,6 @@ bool Mesh::LoadPLY(const String& fileName)
 /*----------------------------------------------------------------*/
 
 // export the mesh to the given file
-// encode a lossless texture before writing it in bounded blocks
-static bool SaveTexturePNG(const Image8U3& image, const String& fileName, int nCompression, bool bBuffered)
-{
-	ASSERT(!image.empty());
-	ASSERT(nCompression >= 0 && nCompression <= 9);
-	ASSERT(Util::getFileExt(fileName).ToLower() == _T(".png"));
-	try {
-		if (!bBuffered) {
-			Util::ensureFolder(fileName);
-			return cv::imwrite(fileName, image, {cv::IMWRITE_PNG_COMPRESSION, nCompression});
-		}
-		std::vector<uchar> buffer;
-		if (!cv::imencode(".png", image, buffer, {cv::IMWRITE_PNG_COMPRESSION, nCompression}))
-			return false;
-		Util::ensureFolder(fileName);
-		File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
-		if (!file.isOpen())
-			return false;
-		const size_t BLOCK_SIZE(1024 * 1024);
-		for (size_t offset = 0; offset < buffer.size();) {
-			const size_t size(MINF(BLOCK_SIZE, buffer.size() - offset));
-			if (file.write(buffer.data() + offset, size) != size)
-				return false;
-			offset += size;
-		}
-	} catch (const cv::Exception& ex) {
-		VERBOSE("error: saving texture '%s' (exception: %s)", fileName.c_str(), ex.what());
-		return false;
-	}
-	return true;
-}
-
 // export the mesh to the given file
 bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
 {
@@ -811,7 +779,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string((unsigned)texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
 		    ply.AddComment(_T("TextureFile ")+Util::getFileNameExt(textureFileName));
 		    if (!(bTexLossless && (bPNGBuffered || nPNGCompression != 6)
-				? SaveTexturePNG(texturesDiffuse[texId], textureFileName, nPNGCompression, bPNGBuffered)
+				? texturesDiffuse[texId].Save(textureFileName, nPNGCompression, bPNGBuffered)
 				: texturesDiffuse[texId].Save(textureFileName)))
 		        return false;
 		}

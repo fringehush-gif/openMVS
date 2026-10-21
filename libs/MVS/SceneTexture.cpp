@@ -560,16 +560,16 @@ void MeshTexture::ListVertexFaces()
 // extract array of faces viewed by each image
 bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& _views, int optionalGpu)
 {
-  ASSERT(optionalGpu>=-2);
-  // Repeated explicit views keep the accepted CPU behavior and caller order.
-  const bool uniqueViews=optionalGpu==-2 || TextureScoring::UniqueExplicitViews(_views);
-  #ifndef _USE_CUDA
-  if (optionalGpu!=-2) {
-    VERBOSE("CUDA texture scoring requested in a build without CUDA");
-    return false;
-  }
-  #endif
-  // create faces octree
+	ASSERT(optionalGpu>=-2);
+	// Repeated explicit views keep the accepted CPU behavior and caller order.
+	const bool uniqueViews=optionalGpu==-2 || TextureScoring::UniqueExplicitViews(_views);
+	#ifndef _USE_CUDA
+	if (optionalGpu!=-2) {
+		VERBOSE("CUDA texture scoring requested in a build without CUDA");
+		return false;
+	}
+	#endif
+	// create faces octree
 	Mesh::Octree octree;
 	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
 
@@ -643,45 +643,45 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		if (nIgnoreMaskLabel == -1 && VERBOSITY_LEVEL > 3)
 			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
 		#endif
-    TextureScoring::Counts projAreas(faces.size()), areas(faces.size());
-    projAreas.Memset(0); areas.Memset(0);
-    TextureScoring::Colors colors;
-    #if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-    constexpr bool collectColor=true;
-    colors.resize(faces.size());
-    #else
-    constexpr bool collectColor=false;
-    #endif
-    bool usedCUDA=false;
-    #ifdef _USE_CUDA
-    if (TextureScoring::Eligible(optionalGpu,uniqueViews,rasterer.mask,imageData.image,highResSize)) {
-      std::vector<MVS::CUDA::TextureTriangle> triangles;
-      if (TextureScoring::PrepareTriangles(rasterer,faces,cameraFaces,triangles)) {
-        std::vector<MVS::CUDA::TextureCount> counts;
-        MVS::CUDA::TextureTiming timing{};
-        if (!MVS::CUDA::RunTextureCUDA(highResSize.width,highResSize.height,
-            imageData.image.cols,imageData.image.rows,triangles,
-            collectColor ? imageData.image.ptr<unsigned char>() : nullptr,
-            counts,timing,nullptr,optionalGpu)) {
-          VERBOSE("CUDA texture operation failed; aborting texture stage after workers join");
-          #ifdef TEXOPT_USE_OPENMP
-          bAbort=true;
-          #pragma omp flush (bAbort)
-          ++progress;
-          continue;
-          #else
-          return false;
-          #endif
-        }
-        TextureScoring::ImportCounts<collectColor>(triangles,counts,projAreas,areas,colors);
-        usedCUDA=true;
-      }
-    }
-    #endif
-    if (!usedCUDA) {
-      TextureScoring::RasterCPU(rasterer,faces,cameraFaces,projAreas);
-      TextureScoring::FoldVisible<collectColor>(faceMap,depthMap,imageData.image,areas,colors);
-    }
+		TextureScoring::Counts projAreas(faces.size()), areas(faces.size());
+		projAreas.Memset(0); areas.Memset(0);
+		TextureScoring::Colors colors;
+		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		constexpr bool collectColor=true;
+		colors.resize(faces.size());
+		#else
+		constexpr bool collectColor=false;
+		#endif
+		bool usedCUDA=false;
+		#ifdef _USE_CUDA
+		if (TextureScoring::Eligible(optionalGpu,uniqueViews,rasterer.mask,imageData.image,highResSize)) {
+			std::vector<MVS::CUDA::TextureTriangle> triangles;
+			if (TextureScoring::PrepareTriangles(rasterer,faces,cameraFaces,triangles)) {
+				std::vector<MVS::CUDA::TextureCount> counts;
+				MVS::CUDA::TextureTiming timing{};
+				if (!MVS::CUDA::RunTextureCUDA(highResSize.width,highResSize.height,
+						imageData.image.cols,imageData.image.rows,triangles,
+						collectColor ? imageData.image.ptr<unsigned char>() : nullptr,
+						counts,timing,nullptr,optionalGpu)) {
+					VERBOSE("CUDA texture operation failed; aborting texture stage after workers join");
+					#ifdef TEXOPT_USE_OPENMP
+					bAbort=true;
+					#pragma omp flush (bAbort)
+					++progress;
+					continue;
+					#else
+					return false;
+					#endif
+				}
+				TextureScoring::ImportCounts<collectColor>(triangles,counts,projAreas,areas,colors);
+				usedCUDA=true;
+			}
+		}
+		#endif
+		if (!usedCUDA) {
+			TextureScoring::RasterCPU(rasterer,faces,cameraFaces,projAreas);
+			TextureScoring::FoldVisible<collectColor>(faceMap,depthMap,imageData.image,areas,colors);
+		}
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp critical
 		#endif

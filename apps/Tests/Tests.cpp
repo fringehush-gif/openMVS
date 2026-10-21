@@ -53,6 +53,27 @@ DEFINE_LOG_NAME(lt, _T("Test    "));
 bool UnitTests()
 {
 	TD_TIMER_START();
+	// Distinct BGR channels catch channel/depth changes in both PNG output paths.
+	{
+		const ScopedTempDir tmpDir(_T("PNGOptions"));
+		if (!tmpDir.IsValid())
+			return false;
+		Image8U3 image(7, 9);
+		for (int y=0; y<image.rows; ++y)
+			for (int x=0; x<image.cols; ++x)
+				image(y,x) = Pixel8U(uint8_t(17+x), uint8_t(51+y), uint8_t(103+x+y));
+		for (int compression: {0, 2, 6, 9})
+			for (bool buffered: {false, true}) {
+				const String fileName(tmpDir(String::FormatString("level%d-buffer%d.png", compression, int(buffered))));
+				Image8U3 decoded;
+				if (!image.Save(fileName, compression, buffered) || !decoded.Load(fileName) || decoded.size()!=image.size() || cv::norm(image, decoded, cv::NORM_INF)!=0) {
+					VERBOSE("ERROR: PNG options round trip failed (level %d, buffered %d)", compression, int(buffered));
+					return false;
+				}
+			}
+		VERBOSE("PNG options: 8 lossless BGR round trips passed");
+	}
+
 	if (!MVS::TextureScoringContractTest()) {
 		VERBOSE("ERROR: TextureScoringContractTest failed!");
 		return false;

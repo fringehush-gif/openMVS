@@ -50,54 +50,59 @@ MVS_API bool TexturePatchContainmentTest();
 
 namespace MVS { namespace TextureScoring {
 typedef Mesh::FIndex FIndex;
-	typedef TImage<cuint32_t> FaceMap;
-	struct RasterMesh : TRasterMesh<RasterMesh> {
-		typedef TRasterMesh<RasterMesh> Base;
-		FaceMap& faceMap;
-		FIndex idxFace;
-		Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
-		bool validFace;
-		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
-		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
+typedef TImage<cuint32_t> FaceMap;
+struct RasterMesh : TRasterMesh<RasterMesh>
+{
+	typedef TRasterMesh<RasterMesh> Base;
+	FaceMap& faceMap;
+	FIndex idxFace;
+	Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
+	bool validFace;
+	const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
+	const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
 
-		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap, const cv::Size& imageSize)
-			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap),
-			scaleMaskX((float)imageSize.width / _faceMap.cols), scaleMaskY((float)imageSize.height / _faceMap.rows),
-			border(CEIL2INT(3.f / MINF(scaleMaskX, scaleMaskY)) - 1) {}
-		inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
-			return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder(t.pti[v] = camera.TransformPointC2I(t.ptc[v]), border);
+	RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap, const cv::Size& imageSize)
+		: Base(_vertices, _camera, _depthMap), faceMap(_faceMap),
+		scaleMaskX((float)imageSize.width / _faceMap.cols), scaleMaskY((float)imageSize.height / _faceMap.rows),
+		border(CEIL2INT(3.f / MINF(scaleMaskX, scaleMaskY)) - 1) {}
+	inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t)
+	{
+		return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+			depthMap.isInsideWithBorder(t.pti[v] = camera.TransformPointC2I(t.ptc[v]), border);
+	}
+	inline void Clear()
+	{
+		Base::Clear();
+		faceMap.memset((uint8_t)NO_ID);
+	}
+	uint32_t* projArea = nullptr; // when set, counts every pixel the face covers, occluded or not
+	void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary)
+	{
+		if (projArea)
+			++*projArea;
+		const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+		const Depth z(ComputeDepth(t, pbary));
+		ASSERT(z > Depth(0));
+		Depth& depth = depthMap(pt);
+		if (depth == 0 || depth > z) {
+			depth = z;
+			faceMap(pt) = validFace && (validFace = (mask.empty() || mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
 		}
-		inline void Clear() {
-			Base::Clear();
-			faceMap.memset((uint8_t)NO_ID);
-		}
-		uint32_t* projArea = nullptr; // when set, counts every pixel the face covers, occluded or not
-		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
-			if (projArea)
-				++*projArea;
-			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
-			const Depth z(ComputeDepth(t, pbary));
-			ASSERT(z > Depth(0));
-			Depth& depth = depthMap(pt);
-			if (depth == 0 || depth > z) {
-				depth = z;
-				faceMap(pt) = validFace && (validFace = (mask.empty() || mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
-			}
-		}
-	};
-
+	}
+};
 
 typedef Point3f Color;
 typedef CLISTDEF0IDX(uint32_t,Mesh::FIndex) Counts;
 typedef CLISTDEF0IDX(Color,Mesh::FIndex) Colors;
 
-inline bool UniqueExplicitViews(const IIndexArr& views) {
+inline bool UniqueExplicitViews(const IIndexArr& views)
+{
 	IIndexArr sorted(views);
 	std::sort(sorted.begin(),sorted.end());
 	return std::adjacent_find(sorted.begin(),sorted.end())==sorted.end();
 }
-inline bool HostPrecisionEligible() {
+inline bool HostPrecisionEligible()
+{
 #if defined(__FAST_MATH__) || defined(__FMA__) || defined(_M_FP_FAST) || defined(_M_FP_CONTRACT) || \
     (defined(_MSC_VER) && !defined(__clang__) && _MSC_VER < 1930 && \
      defined(__AVX2__) && !defined(_M_FP_STRICT))
@@ -110,7 +115,8 @@ inline bool HostPrecisionEligible() {
 	return false; // CUDA parity is currently qualified only with observable MXCSR.
 #endif
 }
-inline bool Eligible(int optionalGpu, bool uniqueViews, const Image8U& mask, const Image8U3& image, const cv::Size& nativeSize) {
+inline bool Eligible(int optionalGpu, bool uniqueViews, const Image8U& mask, const Image8U3& image, const cv::Size& nativeSize)
+{
 	ASSERT(optionalGpu>=-2 && !image.empty() && nativeSize.width>0 && nativeSize.height>0);
 	// Eligibility runs before any device/context/stream/allocation/transfer.
 	return optionalGpu!=-2 && uniqueViews && HostPrecisionEligible() && image.isContinuous() &&
@@ -118,7 +124,8 @@ inline bool Eligible(int optionalGpu, bool uniqueViews, const Image8U& mask, con
 		(mask.empty() || size_t(cv::countNonZero(mask))==mask.total());
 }
 inline bool PrepareTriangles(RasterMesh& rasterer, const Mesh::FaceArr& faces,
-		const Mesh::FaceIdxArr& cameraFaces, std::vector<CUDA::TextureTriangle>& triangles) {
+		const Mesh::FaceIdxArr& cameraFaces, std::vector<CUDA::TextureTriangle>& triangles)
+{
 	ASSERT(cameraFaces.size()<UINT_MAX);
 	triangles.clear(); triangles.reserve(cameraFaces.size());
 	RasterMesh::Triangle triangle;
@@ -151,12 +158,15 @@ inline bool PrepareTriangles(RasterMesh& rasterer, const Mesh::FaceArr& faces,
 	return triangles.size()<INT_MAX;
 }
 inline void RasterCPU(RasterMesh& rasterer, const Mesh::FaceArr& faces,
-		const Mesh::FaceIdxArr& cameraFaces, Counts& projAreas) {
+		const Mesh::FaceIdxArr& cameraFaces, Counts& projAreas)
+{
 	ASSERT(projAreas.size()==faces.size());
+	ASSERT(rasterer.faceMap.size()==rasterer.depthMap.size());
 	RasterMesh::Triangle triangle;
 	RasterMesh::TriangleRasterizer triangleRasterizer(triangle,rasterer);
 	rasterer.Clear();
 	for (Mesh::FIndex idxFace:cameraFaces) {
+		ASSERT(idxFace<faces.size());
 		rasterer.validFace=true;
 		const Mesh::Face& facet=faces[idxFace];
 		rasterer.idxFace=idxFace;
@@ -167,8 +177,11 @@ inline void RasterCPU(RasterMesh& rasterer, const Mesh::FaceArr& faces,
 	}
 }
 template<bool WithColor> inline void FoldVisible(const FaceMap& faceMap, const DepthMap& depthMap,
-		const Image8U3& image, Counts& areas, Colors& colors) {
+		const Image8U3& image, Counts& areas, Colors& colors)
+{
 	ASSERT(!faceMap.empty() && faceMap.size()==depthMap.size() && !image.empty());
+	if constexpr (WithColor)
+		ASSERT(colors.size()==areas.size());
 	const float scaleWeightX((float)image.cols / faceMap.cols);
 	const float scaleWeightY((float)image.rows / faceMap.rows);
 	for (int j=0;j<faceMap.rows;++j) {
@@ -176,6 +189,7 @@ template<bool WithColor> inline void FoldVisible(const FaceMap& faceMap, const D
 			const Mesh::FIndex idxFace=faceMap(j,i).idx;
 			ASSERT(idxFace==NO_ID || depthMap(j,i)>0);
 			if (idxFace==NO_ID) continue;
+			ASSERT(idxFace<areas.size());
 			if constexpr (WithColor) {
 				const Color color(image((int)(j*scaleWeightY),(int)(i*scaleWeightX)));
 				if (areas[idxFace]++==0) colors[idxFace]=color;
@@ -185,8 +199,11 @@ template<bool WithColor> inline void FoldVisible(const FaceMap& faceMap, const D
 	}
 }
 template<bool WithColor> inline void ImportCounts(const std::vector<CUDA::TextureTriangle>& triangles,
-		const std::vector<CUDA::TextureCount>& counts, Counts& projected, Counts& visible, Colors& colors) {
+		const std::vector<CUDA::TextureCount>& counts, Counts& projected, Counts& visible, Colors& colors)
+{
 	ASSERT(triangles.size()==counts.size() && projected.size()==visible.size());
+	if constexpr (WithColor)
+		ASSERT(colors.size()==visible.size());
 	for (size_t i=0;i<triangles.size();++i) {
 		const auto face=triangles[i].face;
 		ASSERT(face<projected.size());
@@ -198,7 +215,8 @@ template<bool WithColor> inline void ImportCounts(const std::vector<CUDA::Textur
 		if constexpr (WithColor) colors[face]=Color(counts[i].color[0],counts[i].color[1],counts[i].color[2]);
 	}
 }
-inline float Quality(uint32_t visible, uint32_t projected) {
+inline float Quality(uint32_t visible, uint32_t projected)
+{
 	ASSERT(visible<=projected);
 	float quality=(float)visible;
 	if (visible<0.9f*projected && projected-visible>2) quality*=0.1f;

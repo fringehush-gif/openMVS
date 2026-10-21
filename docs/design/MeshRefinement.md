@@ -76,8 +76,8 @@ shared `PrepareRefineImage` (`SceneRefineCommon.cpp`) loads, gray-converts, Gaus
 scale's `sigma` and resizes; `ComputeRefineImageGradient` builds the per-view derivative image both
 backends read (skipped when `OPTREFINE::nImageGradient == 3`, which samples the bilinear
 interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `PrepareRefineMesh`
-then runs the shared mesh preparation (§2.3), and `ListVertexFacesPost` lists incident/boundary
-vertices before the optimization phase (§2.7) runs.
+then runs the shared mesh preparation (§2.3), and `ListVertexFacesPost` builds ordered vertex-neighbor lists and boundary flags in one traversal
+through `Mesh::ListIncidentVerticesAndBoundary` before the optimization phase (§2.7) runs.
 
 ### 2.3 Mesh preparation
 

@@ -32,7 +32,11 @@ neighbours) and never below one; reaching that floor is logged once, since the g
 makes it cost re-reads rather than memory. The cache thus shrinks as the cloud grows instead of taking the memory the cloud and other
 processes need; the colour images stay resident when they fit in the free memory. A depth-map file that fails
 to load (corrupt or truncated) is logged and left out: as a reference it is skipped, as a neighbour it
-is never walked into. For the chosen reference map:
+is never walked into. Active references are pinned during admission; the non-waiting fusion
+overloads are used only after producers have joined. Membership scratch is reused by
+`FetchBestNextDMapIndex` without changing scheduling order. Fresh intra-map priors use one
+fusion-local reusable map; an existing cached prior remains owned by its original depth map.
+For the chosen reference map:
 
 1. **Seeding.** Every pixel is visited once, in raster order, via the `FusePoint` lambda.
    A pixel with no depth, already consumed by an earlier cluster (`useMask`), or below the confidence
@@ -47,7 +51,9 @@ is never walked into. For the chosen reference map:
    (`fDepthDiffThreshold`), lateral reprojection error (`fDepthReprojectionErrorThreshold`, tested
    as `normSq(diff) > maxReprojErrorSq`), and normal agreement (`fNormalDiffThreshold`). Each joined
    pixel is marked consumed in `useMask`, so a pixel belongs to at most one cluster, and the walk
-   continues from it into *its* neighbours, bounded by `nMaxFuseDepth` and `nMaxPointsFuse`. A
+   continues from it into *its* neighbours. The consumed mask is checked before a random depth
+   read. Camera coefficients are staged in ordered groups of four and projected as SIMD packets;
+   recursion still follows the original neighbor order, with a scalar tail. The walk is bounded by `nMaxFuseDepth` and `nMaxPointsFuse`. A
    neighbour whose own measured depth lies more than `VIOLATION_MARGIN·fDepthDiffThreshold` behind
    the cluster's reprojected point (`ConfRefine::VIOLATION_MARGIN`, shared with the confidence
    recalibration) fails the join and is recorded as a contradicting view (`fusedContraViews`,
@@ -69,7 +75,10 @@ is never walked into. For the chosen reference map:
    robust to a single bad join, and the reason weights never enter the position. Its views are the
    distinct views of its members, each weighted by that view's confidence, combined with `max` (not
    sum) across pixels from the same view since those are correlated observations of one surface; its
-   normal is the normalised sum of member normals and its colour their mean.
+   normal is the normalised sum of member normals and its colour their mean. The color accumulator
+   starts at zero for the first cluster as well as subsequent clusters. Per-point view/weight arrays
+   copy only live entries into exact-size storage. Owner maps and masks are released after their
+   final reader.
 
 Clusters that fail the keep-rule are discarded and their pixels stay consumed, unless
 `bFuseRecycleDropped` is set: a dropped cluster then hands its pixels back to the pool

@@ -1376,6 +1376,8 @@ public:
 
 	bool Load(const String&);
 	bool Save(const String&) const;
+	// PNG-only explicit options; the one-argument Save keeps existing format defaults.
+	bool Save(const String& fileName, int nPNGCompression, bool bBuffered) const;
 
 	#ifndef _RELEASE
 	void Show(const String& winname, int delay=0, bool bDestroy=true) const;
