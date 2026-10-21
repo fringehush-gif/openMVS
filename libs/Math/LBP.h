@@ -166,10 +166,9 @@ public:
 					// E0[k] <= E1[k] makes the excluded E1[k=j] irrelevant; the k of label j is
 					// found in a table indexed by label (1 + k, 0 for a label node1 lacks)
 					const Node& node1 = nodes[edge.nodeID1];
-					thread_local std::vector<EnergyType> e0, e1;
+					thread_local std::vector<EnergyType> e0;
 					thread_local std::vector<uint32_t> labelSlots;
 					e0.resize(labels1.size());
-					e1.resize(labels1.size());
 					EnergyType minE1(std::numeric_limits<EnergyType>::max());
 					for (size_t k = 0; k < labels1.size(); ++k) {
 						const LabelID label1(labels1[k]);
@@ -187,7 +186,6 @@ public:
 							energy1 += oldMsgs[pre_edge.msgs+k];
 						}
 						e0[k] = energy0;
-						e1[k] = energy1;
 						if (minE1 > energy1)
 							minE1 = energy1;
 					}
