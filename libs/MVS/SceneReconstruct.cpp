@@ -1347,8 +1347,10 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		graph.Release();
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
-		std::unordered_map<void*,Mesh::VIndex> mapVertices;
-		mapVertices.reserve(nEstimatedNumVerts);
+		ASSERT(nEstimatedNumVerts < NO_ID);
+		// The ordering index is no longer needed; reuse it for first-encounter mesh indices.
+		for (delaunay_t::Finite_vertices_iterator vi=delaunay.finite_vertices_begin(), ve=delaunay.finite_vertices_end(); vi!=ve; ++vi)
+			vi->info().idx = NO_ID;
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
@@ -1365,11 +1367,13 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				for (int v=0; v<3; ++v) {
 					const vertex_handle_t vh(tri.verts[v]);
 					ASSERT(vh->point() == delaunay.triangle(ci,i)[v]);
-					const auto pairItID(mapVertices.insert(std::make_pair(vh.for_compact_container(), (Mesh::VIndex)mesh.vertices.GetSize())));
-					if (pairItID.second)
+					Mesh::VIndex& idx(vh->info().idx);
+					if (idx == NO_ID) {
+						idx = mesh.vertices.GetSize();
 						mesh.vertices.Insert(CGAL2MVS<Mesh::Vertex::Type>(rescale.ToWorld(vh->point())));
-					ASSERT(pairItID.first->second < mesh.vertices.GetSize());
-					face[v] = pairItID.first->second;
+					}
+					ASSERT(idx < mesh.vertices.GetSize());
+					face[v] = idx;
 				}
 				// correct face orientation
 				if (!ciType)
