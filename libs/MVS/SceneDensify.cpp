@@ -38,6 +38,8 @@
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
 #include "DepthMapSnapshotCache.h"
+#include <algorithm>
+#include <limits>
 
 using namespace MVS;
 
@@ -2560,13 +2562,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	BoolArr neighbors(arrDepthData.size());
-	PointCloud::Point refPoint;
-	PointCloud::Normal refNormal;
-	CLISTDEF0IDX(float, unsigned) fusedPoints[3];
-	PointCloud::ViewArr fusedViews;
-	FloatArr fusedWeights;
-	Point3d fusedNormal;
-	Pixel32F fusedColor(Pixel32F::BLACK);
 	// contradiction guard of the keep-rule (see OPTDENSE::nFuseViolationMax): the DISTINCT views that
 	// contradict the point being accumulated -- fusedContraViews see a surface well behind it
 	// (free-space violation) or agree with its depth and reprojection but dispute its normal, the
@@ -2574,12 +2569,75 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// low confidence, consumed), both are evidence against the point. Deduplicated because the
 	// flood-fill can re-reach a view through several parents before its useMask is set, and one view
 	// can contradict in both ways through different probes; reset alongside fusedViews
-	PointCloud::ViewArr fusedContraViews, fusedNormViews;
 	// the pixels the cluster currently being accumulated consumed, one entry per join: the list a
 	// DROPPED cluster walks to hand them back (bFuseRecycleDropped). In lockstep with fusedPoints,
-	// hence bounded by nMaxPointsFuse too, and reset alongside fusedViews et al.
+	// reset alongside fusedViews et al. A recursive parent can add past the soft limit.
 	struct MapPixel { IIndex ID; ImageRef x; };
-	CLISTDEFIDX(MapPixel,IIndex) clusterMembers;
+
+	struct ClusterScratch {
+		PointCloud::Point refPoint;
+		PointCloud::Normal refNormal;
+		CLISTDEF0IDX(float, unsigned) fusedPoints[3];
+		PointCloud::ViewArr fusedViews;
+		FloatArr fusedWeights;
+		Point3d fusedNormal = Point3d::ZERO;
+		Pixel32F fusedColor = Pixel32F::BLACK;
+		PointCloud::ViewArr fusedContraViews, fusedNormViews;
+		CLISTDEFIDX(MapPixel,IIndex) clusterMembers;
+		void Reset() {
+			ASSERT(fusedPoints[0].size() == fusedPoints[1].size() && fusedPoints[0].size() == fusedPoints[2].size());
+			fusedPoints[0].clear(); fusedPoints[1].clear(); fusedPoints[2].clear();
+			fusedViews.clear(); fusedWeights.clear();
+			fusedNormal = Point3d::ZERO;
+			fusedColor = Pixel32F::BLACK;
+			fusedContraViews.clear(); fusedNormViews.clear();
+			clusterMembers.clear();
+		}
+	};
+	struct SerialMask {
+		UseMaskArr& masks;
+		const DepthDataArr& depths;
+		bool IsUsed(IIndex ID, const ImageRef& x) const {
+			ASSERT(ID < masks.size() && Image8U::isInside(x, depths[ID].size) && !masks[ID].empty());
+			const UseMask& mask(masks[ID]);
+			ASSERT(mask.cols == depths[ID].size.width && mask.rows == depths[ID].size.height);
+			return mask(x);
+		}
+		bool Claim(IIndex ID, const ImageRef& x) {
+			ASSERT(!IsUsed(ID, x));
+			masks[ID].set(x);
+			return true;
+		}
+	};
+	#if defined(DENSE_USE_OPENMP) && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+	struct AtomicMask {
+		UseMaskArr& masks;
+		const DepthDataArr& depths;
+		size_t& failedClaims;
+		bool IsUsed(IIndex ID, const ImageRef& x) const {
+			ASSERT(ID < masks.size() && Image8U::isInside(x, depths[ID].size) && !masks[ID].empty());
+			const UseMask& mask(masks[ID]);
+			ASSERT(mask.cols == depths[ID].size.width && mask.rows == depths[ID].size.height);
+			const UseMask::Index bit(UseMask::computeIndex(x, mask.cols));
+			ASSERT(bit.idx < size_t(mask.length()));
+			return (__atomic_load_n(&mask.data[bit.idx], __ATOMIC_RELAXED) & bit.flag) != 0;
+		}
+		bool Claim(IIndex ID, const ImageRef& x) {
+			ASSERT(ID < masks.size() && Image8U::isInside(x, depths[ID].size) && !masks[ID].empty());
+			UseMask& mask(masks[ID]);
+			ASSERT(mask.cols == depths[ID].size.width && mask.rows == depths[ID].size.height);
+			const UseMask::Index bit(UseMask::computeIndex(x, mask.cols));
+			ASSERT(bit.idx < size_t(mask.length()));
+			const UseMask::Type previous(__atomic_fetch_or(&mask.data[bit.idx], bit.flag, __ATOMIC_RELAXED));
+			if (previous & bit.flag) {
+				++failedClaims;
+				return false;
+			}
+			return true;
+		}
+	};
+	#endif
+
 
 	struct PreparedNeighbor
 	{
@@ -2616,14 +2674,24 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	std::vector<std::vector<PreparedNeighbor>> preparedNeighbors(arrDepthData.size());
 	std::vector<std::vector<ProjectionPacket>> projectionPackets(arrDepthData.size());
 	size_t plannedNeighbors(0), plannedGroups(0), packetSeedScans(0);
-	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
+	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, ClusterScratch& state, auto& mask) -> void {
+		ASSERT(fuseDepth == 0 && ID < arrDepthData.size());
+		auto& refPoint(state.refPoint);
+		auto& refNormal(state.refNormal);
+		auto& fusedPoints(state.fusedPoints);
+		auto& fusedViews(state.fusedViews);
+		auto& fusedWeights(state.fusedWeights);
+		auto& fusedNormal(state.fusedNormal);
+		auto& fusedColor(state.fusedColor);
+		auto& fusedContraViews(state.fusedContraViews);
+		auto& fusedNormViews(state.fusedNormViews);
+		auto& clusterMembers(state.clusterMembers);
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
 			if (!Image8U::isInside(x, depthData.size))
 				return;
 			// ignore consumed pixels before accessing their depth
-			UseMask& useMask = arrUseMask[ID];
-			if (useMask(x))
+			if (mask.IsUsed(ID, x))
 				return;
 			// ignore pixel if not estimated
 			ASSERT(depthData.depthMap.size() == depthData.size);
@@ -2668,8 +2736,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 			}
-			// set the current pixel as visited
-			useMask.set(x);
+			// Claim only after the geometric checks; another worker may win.
+			if (!mask.Claim(ID, x))
+				return;
 			if (bRecycleDropped)
 				clusterMembers.push_back(MapPixel{ID, x});
 			// compute 3D location of the current depth
@@ -2732,6 +2801,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	ConfidenceMap fusionPrior;
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
+	size_t atomicSeeds(0), atomicClaimFailures(0), atomicAccepted(0), atomicDropped(0);
 	while (true) {
 		TD_TIMER_STARTD();
 		// find the best depth-map to fuse next as the one with the most neighbors already in cache
@@ -2831,75 +2901,144 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					for (unsigned coefficient = 0; coefficient < 12; ++coefficient)
 						packets[group].p[coefficient][lane] = nextViews[group * 4 + lane].pCamera->P.val[coefficient];
 		}
-		// try to fuse each depth estimate
-		const size_t nNumPointsPrev(pointcloud.points.size());
-		for (int i=0; i<depthData.size.height; ++i) {
-			for (int j=0; j<depthData.size.width; ++j) {
-				const ImageRef seed(j,i);
-				if (depthData.depthMap(seed) <= Depth(0) || useMask(seed))
-					continue;
-				FusePoint(idxImage, seed, 0);
-				// the intra-map prior of the seed pixel (j,i) contributes fractional virtual support: a seed
-				// lying on a locally coherent surface partially satisfies the view and pixel minimums, so an
-				// inlier that fusion would otherwise drop for want of cross-view confirmation is recovered.
-				// the prior measures agreement with same-depth-map neighbors, which nMinPixelsFuse explicitly
-				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
-				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
-				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * (*pPrior)(i,j) : 0.f);
-				bool bClusterKept(false);
-				if (!fusedViews.empty() &&
-					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
-					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
-					// contradiction guard (nFuseViolationMax<0 disables it): a point kept ONLY thanks to
-					// virtualSupport is "rescued", worth keeping only when its missing support is a lack of
-					// evidence, so at most nFuseViolationMax views may contradict it; a point kept on real
-					// support is dropped only when the views disputing its normal outnumber its own views
-					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
-										  fusedViews.size() < nMinViewsFuse;
-					if (OPTDENSE::nFuseViolationMax < 0 || (rescued ?
-						fusedContraViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax :
-						fusedNormViews.size() <= fusedViews.size())) {
-						bClusterKept = true;
-						// create the corresponding 3D point
-						pointcloud.points.emplace_back(
-							fusedPoints[0].GetMedian(),
-							fusedPoints[1].GetMedian(),
-							fusedPoints[2].GetMedian()
-						);
-						ASSERT(!fusedViews.empty() && fusedViews.size() == fusedWeights.size());
-						pointcloud.pointWeights.emplace_back(fusedWeights.Begin(), fusedWeights.End());
-						pointcloud.pointViews.emplace_back(fusedViews.Begin(), fusedViews.End());
-						if (bEstimateNormal)
-							pointcloud.normals.emplace_back(normalized(fusedNormal));
-						if (bEstimateColor)
-							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
-					}
-				}
-				if (bRecycleDropped) {
-					// a DROPPED cluster hands its pixels back to the pool, so that a later cluster can
-					// use what this one would otherwise have locked away for good. A recycled pixel of
-					// this map that lies later in the seed order is seed-visited again -- intended: it
-					// then joins a different cluster or re-forms one, deterministically either way.
-					// A pixel can therefore be consumed more than once, so the fused-depth count
-					// reported below counts consumptions, not distinct depths
-					if (!bClusterKept)
-						for (const MapPixel& member: clusterMembers)
-							arrUseMask[member.ID].unset(member.x);
-					clusterMembers.clear();
-				}
-				if (!fusedViews.empty()) {
-					nDepths += fusedViews.size();
-					fusedPoints[0].clear();
-					fusedPoints[1].clear();
-					fusedPoints[2].clear();
-					fusedViews.clear();
-					fusedWeights.clear();
-					fusedNormal = Point3d::ZERO;
-					fusedColor = Pixel32F::BLACK;
-					fusedContraViews.clear();
-					fusedNormViews.clear();
+		// Finalize identical cluster statistics into the serial or worker-private cloud.
+		const auto FinishCluster = [&](const ImageRef& seed, ClusterScratch& state, PointCloud& output, size_t& depthCount) -> bool {
+			ASSERT(Image8U::isInside(seed, depthData.size));
+			ASSERT(output.points.size() == output.pointViews.size() && output.points.size() == output.pointWeights.size());
+			auto& fusedPoints(state.fusedPoints);
+			auto& fusedViews(state.fusedViews);
+			auto& fusedWeights(state.fusedWeights);
+			auto& fusedNormal(state.fusedNormal);
+			auto& fusedColor(state.fusedColor);
+			auto& fusedContraViews(state.fusedContraViews);
+			auto& fusedNormViews(state.fusedNormViews);
+			auto& clusterMembers(state.clusterMembers);
+			const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * (*pPrior)(seed) : 0.f);
+			bool bClusterKept(false);
+			if (!fusedViews.empty() &&
+				(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
+				(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
+				const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
+									  fusedViews.size() < nMinViewsFuse;
+				if (OPTDENSE::nFuseViolationMax < 0 || (rescued ?
+					fusedContraViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax :
+					fusedNormViews.size() <= fusedViews.size())) {
+					bClusterKept = true;
+					output.points.emplace_back(
+						fusedPoints[0].GetMedian(),
+						fusedPoints[1].GetMedian(),
+						fusedPoints[2].GetMedian()
+					);
+					ASSERT(!fusedViews.empty() && fusedViews.size() == fusedWeights.size());
+					output.pointWeights.emplace_back(fusedWeights.Begin(), fusedWeights.End());
+					output.pointViews.emplace_back(fusedViews.Begin(), fusedViews.End());
+					if (bEstimateNormal)
+						output.normals.emplace_back(normalized(fusedNormal));
+					if (bEstimateColor)
+						output.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
 				}
 			}
+			if (bRecycleDropped && !bClusterKept)
+				for (const MapPixel& member: clusterMembers)
+					arrUseMask[member.ID].unset(member.x);
+			if (!fusedViews.empty())
+				depthCount += fusedViews.size();
+			state.Reset();
+			return bClusterKept;
+		};
+		SerialMask liveMask{arrUseMask, arrDepthData};
+		ClusterScratch serialScratch;
+		const size_t nNumPointsPrev(pointcloud.points.size());
+		#if defined(DENSE_USE_OPENMP) && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+		if (!bRecycleDropped && omp_get_max_threads() > 1) {
+			struct Worker {
+				ClusterScratch scratch;
+				PointCloud cloud;
+				std::vector<size_t> acceptedSeeds;
+				size_t depths = 0, seeds = 0, failedClaims = 0, accepted = 0, dropped = 0;
+			};
+			const size_t width(size_t(depthData.size.width));
+			const size_t totalPixels(width * size_t(depthData.size.height));
+			ASSERT(width > 0 && totalPixels <= size_t(std::numeric_limits<int64_t>::max()));
+			std::vector<Worker> workers(static_cast<size_t>(omp_get_max_threads()));
+			#pragma omp parallel
+			{
+				Worker& worker(workers[size_t(omp_get_thread_num())]);
+				AtomicMask atomicMask{arrUseMask, arrDepthData, worker.failedClaims};
+				#pragma omp for schedule(dynamic,64)
+				for (int64_t index=0; index<(int64_t)totalPixels; ++index) {
+					const ImageRef seed(int(size_t(index)%width), int(size_t(index)/width));
+					if (depthData.depthMap(seed) <= Depth(0) || atomicMask.IsUsed(idxImage, seed))
+						continue;
+					++worker.seeds;
+					FusePoint(idxImage, seed, 0, worker.scratch, atomicMask);
+					const bool hadViews(!worker.scratch.fusedViews.empty());
+					if (FinishCluster(seed, worker.scratch, worker.cloud, worker.depths)) {
+						ASSERT(worker.acceptedSeeds.size() + 1 == worker.cloud.points.size());
+						worker.acceptedSeeds.push_back(size_t(index));
+						++worker.accepted;
+					} else if (hadViews)
+						++worker.dropped;
+				}
+			}
+			// Workers only append their own points; gather after the implicit barrier
+			// in the original raster seed order, independent of dynamic scheduling.
+			struct OutputRef { size_t seed, worker, point; };
+			size_t acceptedThisMap(0);
+			for (const Worker& worker: workers) {
+				ASSERT(worker.cloud.points.size() == worker.cloud.pointViews.size() && worker.cloud.points.size() == worker.cloud.pointWeights.size());
+				ASSERT(worker.acceptedSeeds.size() == worker.cloud.points.size() && worker.accepted == worker.cloud.points.size());
+				ASSERT(!bEstimateNormal || worker.cloud.normals.size() == worker.cloud.points.size());
+				ASSERT(!bEstimateColor || worker.cloud.colors.size() == worker.cloud.points.size());
+				nDepths += worker.depths;
+				atomicSeeds += worker.seeds;
+				atomicClaimFailures += worker.failedClaims;
+				atomicAccepted += worker.accepted;
+				atomicDropped += worker.dropped;
+				acceptedThisMap += worker.accepted;
+			}
+			std::vector<OutputRef> orderedPoints;
+			orderedPoints.reserve(acceptedThisMap);
+			for (size_t workerID=0; workerID<workers.size(); ++workerID) {
+				const Worker& worker(workers[workerID]);
+				for (size_t i=0; i<worker.acceptedSeeds.size(); ++i) {
+					ASSERT(worker.acceptedSeeds[i] < totalPixels);
+					orderedPoints.push_back(OutputRef{worker.acceptedSeeds[i], workerID, i});
+				}
+			}
+			ASSERT(orderedPoints.size() == acceptedThisMap);
+			std::sort(orderedPoints.begin(), orderedPoints.end(), [totalPixels](const OutputRef& a, const OutputRef& b) {
+				ASSERT(a.seed < totalPixels && b.seed < totalPixels);
+				return a.seed < b.seed;
+			});
+			for (size_t i=0; i<orderedPoints.size(); ++i) {
+				const OutputRef& ref(orderedPoints[i]);
+				ASSERT(ref.worker < workers.size() && ref.seed < totalPixels);
+				ASSERT(i == 0 || orderedPoints[i-1].seed < ref.seed);
+				Worker& worker(workers[ref.worker]);
+				ASSERT(ref.point < worker.cloud.points.size() && worker.acceptedSeeds[ref.point] == ref.seed);
+				pointcloud.points.emplace_back(worker.cloud.points[ref.point]);
+				pointcloud.pointWeights.emplace_back(std::move(worker.cloud.pointWeights[ref.point]));
+				pointcloud.pointViews.emplace_back(std::move(worker.cloud.pointViews[ref.point]));
+				if (bEstimateNormal)
+					pointcloud.normals.emplace_back(worker.cloud.normals[ref.point]);
+				if (bEstimateColor)
+					pointcloud.colors.emplace_back(worker.cloud.colors[ref.point]);
+			}
+		} else
+		#endif
+		{
+			// Recycling is nonmonotone; unsupported atomic targets stay serial.
+			size_t serialDepths(0);
+			for (int i=0; i<depthData.size.height; ++i)
+				for (int j=0; j<depthData.size.width; ++j) {
+					const ImageRef seed(j,i);
+					if (depthData.depthMap(seed) <= Depth(0) || useMask(seed))
+						continue;
+					FusePoint(idxImage, seed, 0, serialScratch, liveMask);
+					FinishCluster(seed, serialScratch, pointcloud, serialDepths);
+				}
+			nDepths += serialDepths;
 		}
 		if (!projectionPackets[idxImage].empty() && pointcloud.points.size() > nNumPointsPrev)
 			++packetSeedScans;
@@ -2921,6 +3060,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		pointcloud.normals.Release();
 
 	DEBUG_EXTRA("Fusion projection plans: %zu neighbor entries, %zu four-view groups, %zu nonempty packet seed scans", plannedNeighbors, plannedGroups, packetSeedScans);
+	DEBUG_EXTRA("Fusion atomic ownership: %zu attempted seeds, %zu failed claims, %zu accepted, %zu dropped clusters", atomicSeeds, atomicClaimFailures, atomicAccepted, atomicDropped);
 	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%), %.2f hits in %.2f cached (%s)",
 		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,

@@ -38,7 +38,10 @@ overloads are used only after producers have joined. Membership scratch is reuse
 fusion-local reusable map; an existing cached prior remains owned by its original depth map.
 For the chosen reference map:
 
-1. **Seeding.** Every pixel is visited once, in raster order, via the `FusePoint` lambda.
+1. **Seeding.** With GNU/Clang OpenMP, more than one worker and recycling off, one team
+   processes the reference pixels in dynamically assigned 64-pixel blocks. Each worker has its own
+   cluster scratch and output cloud. Other builds and single-worker or recycle-on runs visit pixels
+   in raster order. Both paths use the same `FusePoint` lambda.
    A pixel with no depth, already consumed by an earlier cluster (`useMask`), or below the confidence
    floor is skipped; otherwise it seeds a new cluster and becomes its reference point and normal. The
    floor follows the scale of the map's confidence: `ConfRefine::FUSE_MIN_CONF` (0.07) on a
@@ -50,10 +53,13 @@ For the chosen reference map:
    away from its seed one join at a time) on all gates: depth similarity
    (`fDepthDiffThreshold`), lateral reprojection error (`fDepthReprojectionErrorThreshold`, tested
    as `normSq(diff) > maxReprojErrorSq`), and normal agreement (`fNormalDiffThreshold`). Each joined
-   pixel is marked consumed in `useMask`, so a pixel belongs to at most one cluster, and the walk
+   pixel is claimed in `useMask` only after the join gates pass. Parallel traversal uses atomic
+   loads and fetch-or on the existing mask words; a worker that loses a claim abandons that probe.
+   A pixel therefore belongs to at most one cluster, and the walk
    continues from it into *its* neighbours. The consumed mask is checked before a random depth
    read. Camera coefficients are staged in ordered groups of four and projected as SIMD packets;
-   recursion still follows the original neighbor order, with a scalar tail. The walk is bounded by `nMaxFuseDepth` and `nMaxPointsFuse`. A
+   recursion still follows the original neighbor order, with a scalar tail. The walk stops a branch at `nMaxFuseDepth` or after a join reaches `nMaxPointsFuse`;
+   the latter is a soft limit because pending recursive parents can still add members. A
    neighbour whose own measured depth lies more than `VIOLATION_MARGIN·fDepthDiffThreshold` behind
    the cluster's reprojected point (`ConfRefine::VIOLATION_MARGIN`, shared with the confidence
    recalibration) fails the join and is recorded as a contradicting view (`fusedContraViews`,
@@ -77,13 +83,20 @@ For the chosen reference map:
    sum) across pixels from the same view since those are correlated observations of one surface; its
    normal is the normalised sum of member normals and its colour their mean. The color accumulator
    starts at zero for the first cluster as well as subsequent clusters. Per-point view/weight arrays
-   copy only live entries into exact-size storage. Owner maps and masks are released after their
-   final reader.
+   copy only live entries into exact-size storage. Parallel workers append only to their own
+   clouds. Accepted seed ordinals stay aligned with each worker point; lightweight references
+   are sorted by seed and gathered in raster order after the team barrier. The sort and worker
+   buffers are scoped to the current reference map. Maps, masks, cameras,
+   projection packets and the reference prior stay live through that barrier and gather; cache
+   re-budgeting and final-reader release follow afterward.
 
 Clusters that fail the keep-rule are discarded and their pixels stay consumed, unless
 `bFuseRecycleDropped` is set: a dropped cluster then hands its pixels back to the pool
 (`clusterMembers`, one `unset` per member) so a later seed or probe can still use them — a recycled
-pixel can therefore be consumed more than once across the run.
+pixel can therefore be consumed more than once across the run. Recycling uses the serial path
+because its masks are not monotone. Parallel ownership can change cluster membership,
+contradiction evidence and which points are emitted between runs; the seed-relative gates, medians,
+confidence weights, normal sum and colour mean use the same formulas in both paths.
 
 ## 3. Parameters and defaults
 
@@ -94,7 +107,7 @@ pixel can therefore be consumed more than once across the run.
 | `--number-views-fuse` | `OPTDENSE::nMinViewsFuse` | `2` | minimum distinct views for a cluster to be kept (`<2` degrades keeping to merge-like behaviour) |
 | *(config file only)* | `OPTDENSE::nMaxViewsFuse` | `32` | maximum neighbour depth-maps cached and walked per reference |
 | *(config file only)* | `OPTDENSE::nMinPixelsFuse` | `5` | minimum joined pixels for a cluster to be kept |
-| *(config file only)* | `OPTDENSE::nMaxPointsFuse` | `1000` | maximum pixels fused into a single point |
+| *(config file only)* | `OPTDENSE::nMaxPointsFuse` | `1000` | soft pixel-count stopping limit for each recursive branch |
 | *(config file only)* | `OPTDENSE::nMaxFuseDepth` | `100` | maximum recursion depth of the graph walk |
 | `--fusion-depth-diff-threshold,t` | `OPTDENSE::fDepthDiffThreshold` | `0.01` | max relative depth difference to join |
 | `--fusion-reprojection-threshold,d` | `OPTDENSE::fDepthReprojectionErrorThreshold` | `0.6` | max lateral reprojection error, in pixels, to join |
@@ -123,16 +136,18 @@ precision for completeness and is off by default.
   when normal contradictions outnumber its supporting views.
 - **The virtual-support rescue can never fabricate a point from nothing**: it only ever tops up a
   cluster that has at least one real seed pixel (`!fusedViews.empty()` guard); with
-  `fFusePriorWeight == 0` the prior is not even computed for fusion (`bUsePrior` false) and output is
-  byte-identical to the rescue being absent.
+  `fFusePriorWeight == 0` the prior is not computed for fusion (`bUsePrior` false), and the keep-rule
+  uses real support alone.
 - **Point position is always the plain median of member 3D locations**; weights are stored per view
   for downstream consumers (mesh visibility weighting, the Interface's `Vertex::View::confidence`)
   and never used to average the position itself.
-- **The output depends on the cache size**: the reference order follows the cache contents
-  (`FetchBestNextDMapIndex`), so a different cache consumes pixels in a different order and fuses a
-  slightly different cloud (within the 0.003 F1 repeat spread). With free memory above the cap the
-  cache size is fixed by the scene; below it, never compare fusion outputs produced beside another
-  memory-heavy job.
+- **The output depends on cache size and parallel ownership**: concurrent first claims can
+  change cluster membership. Both paths emit accepted points in raster seed order within each
+  reference map. The reference order follows the cache contents (`FetchBestNextDMapIndex`), so a
+  different cache consumes pixels in a different order and fuses a slightly different cloud; the
+  serial cache tests below observed an F1 repeat spread of 0.003. With free memory above the cap
+  the cache size is fixed by the scene; below it, never compare fusion outputs produced beside
+  another memory-heavy job.
   Every neighbour of the current reference stays resident while it is fused: eviction is
   least-recently-used and stops at the reference, which is touched before its neighbours.
 - **The join thresholds are fusion's alone.** The confidence recalibration measures whether a depth
@@ -143,9 +158,31 @@ precision for completeness and is off by default.
 
 ## 5. Validation of the shipped defaults
 
+### Parallel dense fusion
+
+FountainP11, eleven images, Ryzen 3900X, default 24 CPU / 4 CUDA workers, identical cached
+1536/3072 depth maps, recycling off and the same prior/keep settings. An excluded warm-up per arm
+and resolution precedes C/T/T/C: two timed calls per arm and resolution. RAM means integrate the
+observed native-process interval.
+
+| resolution | cached-depth Densify elapsed, serial to parallel | fusion | CPU time | mean RAM | peak RAM |
+|---|---|---|---|---|---|
+| 1536 px | 8.555 to 5.005 s (-41.5%) | 5.941 to 2.459 s (-58.6%) | 22.560 to 30.655 s | 799 to 678 MiB | 1171 to 1187 MiB |
+| 3072 px | 26.880 to 12.000 s (-55.4%) | 22.004 to 6.800 s (-69.1%) | 44.815 to 82.030 s | 2077 to 1784 MiB | 2966 to 3012 MiB |
+
+Fresh clouds have finite positions and unit normals, matching view/weight counts and sampled
+valid contributor IDs/confidences. Point counts differ by less than 0.02%. At each resolution,
+100k cloud samples are compared to the full serial cloud for geometry, normals and colour, and
+the same 100k official Fountain reference vertices are compared to each full cloud: reference
+coverage changes by at most 0.01 percentage point and mean RGB8 differences are 0.033 / 0.029
+levels. Two fresh candidate default reconstructions and their pinned serial controls have no
+invalid, duplicate or non-manifold faces. Bidirectional 100k-vertex comparisons against the full
+opposite mesh have P95 distances below 0.003 / 0.004 scene units. Instructions rise 5.0% / 6.8% as
+fusion uses additional cores; per-reference seed/ref storage raises peak RAM about 1.4% / 1.5%.
+
 ### Join thresholds
 
-Full `DensifyPointCloud --number-views 24` at resolution levels 1 and 0 with the current code, one
+Serial `DensifyPointCloud --number-views 24` at resolution levels 1 and 0, one
 depth-map set per scene and level, re-fused at each threshold pair (`--geometric-iters 0`; the
 confidence recalibration does not read these thresholds, so one estimation serves the whole grid),
 official Tanks-and-Temples evaluator re-aligning every cloud:
@@ -170,7 +207,7 @@ clusters without improving placement.
 
 ### Contradiction guard and `fFusePriorWeight = 4`
 
-Fusion-only on frozen `--resolution-level 0 --number-views 24` depth-maps, official Tanks-and-Temples
+Serial fusion on frozen `--resolution-level 0 --number-views 24` depth-maps, official Tanks-and-Temples
 evaluator re-aligning every cloud; baseline = the previous defaults (prior weight 3, guard on
 free-space violations of rescued points only). Ignatius and Barn were held out of the analysis that
 chose the rule:
@@ -189,7 +226,7 @@ outcome of each probed view and replaying keep-rules against the ground truth: w
 clusters that no view contradicts are as accurate as fully supported ones on every scene, those
 with normal contradictions are not.
 
-End-to-end check of the shipped defaults (`--resolution-level 0 --number-views 24`, full densify
+Serial end-to-end check of the threshold/guard defaults (`--resolution-level 0 --number-views 24`, full densify
 then `ReconstructMesh` at defaults, every product realigned), against the same flags at the previous
 defaults:
 
@@ -205,6 +242,12 @@ of 18–20 GB, for cloud F1 within 0.0003 and mesh F1 within 0.003 (the cache si
 fusion order, §4).
 
 ## 6. Rejected alternatives
+
+- **Gathering in worker order** — needlessly changes point order before Delaunay reconstruction;
+  gather by raster seed instead.
+
+- **Frozen-mask proposals with ordered validation/replay** — duplicate traversal and mask-read
+  bookkeeping outweigh parallel work at both tested resolutions.
 
 - **A global `fFusePriorWeight` without the contradiction guard** — 0 wins on accuracy-bound scenes,
   4 on completeness-bound ones; any single value loses up to 0.035 F1 somewhere.
@@ -229,8 +272,8 @@ fusion order, §4).
 
 ## 7. Open items
 
-- The fused cloud depends on the cache size through the reference order (§4); an order independent
-  of the cache contents would make runs reproducible under any memory pressure.
+- The fused cloud depends on cache contents and concurrent pixel ownership (§4); the serial path
+  preserves raster traversal, but still follows cache-dependent reference order.
 - The point-cloud itself is the largest fusion allocation (about 250 B per point, most of it the two
   per-point view and weight lists); a flat views/weights layout would cut it roughly in half.
 - `nMaxViewsFuse` (32) exceeds the estimation neighbourhood (`nMaxViews`, 12): the flood-fill can
