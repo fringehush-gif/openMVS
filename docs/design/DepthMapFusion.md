@@ -34,8 +34,10 @@ processes need; the colour images stay resident when they fit in the free memory
 to load (corrupt or truncated) is logged and left out: as a reference it is skipped, as a neighbour it
 is never walked into. Active references are pinned during admission; the non-waiting fusion
 overloads are used only after producers have joined. Membership scratch is reused by
-`FetchBestNextDMapIndex` without changing scheduling order. Fresh intra-map priors use one
-fusion-local reusable map; an existing cached prior remains owned by its original depth map.
+`FetchBestNextDMapIndex` without changing scheduling order. An existing cached intra-map prior remains owned by its original depth map.
+When it is absent, fusion evaluates the shared per-pixel prior formula only for nonempty seed
+clusters. Recycling keeps one reusable full scratch prior because a seed can recur. Confidence
+adjustment still requests a complete prior map; fusion never installs a partially filled cache.
 For the chosen reference map:
 
 1. **Seeding.** With GNU/Clang OpenMP, more than one worker and recycling off, one team
@@ -68,10 +70,13 @@ For the chosen reference map:
    (`fusedNormViews`): it sees the same place and disputes the surface there.
 3. **Keeping.** The cluster becomes a point when it has at least `nMinPixelsFuse` pixels *and*
    `nMinViewsFuse` distinct views (both clamped by the map count). Both minimums accept fractional
-   "virtual" support, `fFusePriorWeight` times the seed's intra-map prior
-   (`DepthMapsData::GetIntraMapPrior`/`ComputeIntraMapPrior`, the same prior the confidence
-   recalibration uses — see `DepthMapConfidence.md`), which keeps an inlier lying on a coherent
-   surface that too few views happened to confirm. A point kept *only* thanks to that support is
+   "virtual" support, `fFusePriorWeight` times the seed's intra-map prior.
+   `ComputeIntraMapPriorAt` shares the exact pixel formula with `ComputeIntraMapPrior`, which fills
+   the complete map used by confidence recalibration (see `DepthMapConfidence.md`). Fusion reuses
+   a complete cached map when available; otherwise it evaluates the current seed after traversal.
+   Every nonempty cluster retains the prior comparison, including clusters with enough real support,
+   so nonfinite cached values or weights keep their original comparison behavior. The support keeps
+   an inlier lying on a coherent surface that too few views happened to confirm. A point kept *only* thanks to that support is
    "rescued". The **contradiction guard** (`nFuseViolationMax`, `< 0` disables it) then separates a
    lack of evidence from evidence against the point: a rescued point may be contradicted by at most
    `nFuseViolationMax` distinct views (a view contradicting in both ways counts once), and
@@ -158,27 +163,24 @@ precision for completeness and is off by default.
 
 ## 5. Validation of the shipped defaults
 
-### Parallel dense fusion
+### Parallel dense fusion and per-seed priors
 
 FountainP11, eleven images, Ryzen 3900X, default 24 CPU / 4 CUDA workers, identical cached
 1536/3072 depth maps, recycling off and the same prior/keep settings. An excluded warm-up per arm
-and resolution precedes C/T/T/C: two timed calls per arm and resolution. RAM means integrate the
-observed native-process interval.
+and resolution precedes C/T/T/C: two timed calls per arm and resolution. The control computes a
+complete missing prior before each reference; the candidate evaluates only nonempty seed clusters.
+Both arms use parallel fusion and raster-seed gathering. RAM means integrate the observed
+native-process interval.
 
-| resolution | cached-depth Densify elapsed, serial to parallel | fusion | CPU time | mean RAM | peak RAM |
+| resolution | cached-depth Densify elapsed, full to per-seed prior | fusion | CPU time | mean RAM | peak RAM |
 |---|---|---|---|---|---|
-| 1536 px | 8.555 to 5.005 s (-41.5%) | 5.941 to 2.459 s (-58.6%) | 22.560 to 30.655 s | 799 to 678 MiB | 1171 to 1187 MiB |
-| 3072 px | 26.880 to 12.000 s (-55.4%) | 22.004 to 6.800 s (-69.1%) | 44.815 to 82.030 s | 2077 to 1784 MiB | 2966 to 3012 MiB |
+| 1536 px | 5.210 to 5.030 s (-3.5%) | 2.448 to 2.381 s (-2.7%) | 31.495 to 28.890 s (-8.3%) | 670 to 687 MiB | 1184 to 1189 MiB |
+| 3072 px | 11.740 to 11.410 s (-2.8%) | 6.741 to 6.425 s (-4.7%) | 81.745 to 75.005 s (-8.2%) | 1790 to 1759 MiB | 3008 to 2981 MiB |
 
-Fresh clouds have finite positions and unit normals, matching view/weight counts and sampled
-valid contributor IDs/confidences. Point counts differ by less than 0.02%. At each resolution,
-100k cloud samples are compared to the full serial cloud for geometry, normals and colour, and
-the same 100k official Fountain reference vertices are compared to each full cloud: reference
-coverage changes by at most 0.01 percentage point and mean RGB8 differences are 0.033 / 0.029
-levels. Two fresh candidate default reconstructions and their pinned serial controls have no
-invalid, duplicate or non-manifold faces. Bidirectional 100k-vertex comparisons against the full
-opposite mesh have P95 distances below 0.003 / 0.004 scene units. Instructions rise 5.0% / 6.8% as
-fusion uses additional cores; per-reference seed/ref storage raises peak RAM about 1.4% / 1.5%.
+Instructions fall 6.9% / 6.4% and CPU cycles 9.0% / 8.9%. Default-worker point counts differ by
+less than 0.01%. A separate one-worker comparison at each resolution checks the complete cloud
+byte for byte, removing concurrent pixel ownership as a source of variation. The Release build,
+loader and unit/SFM/MVS suites passed.
 
 ### Join thresholds
 

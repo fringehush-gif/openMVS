@@ -1226,82 +1226,89 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 // bParallel: enable the inner "#pragma omp parallel for" -- false when called from a context that is
 // already parallelized by some OTHER mechanism, per this codebase's no-per-view-threading policy (see
 // GetIntraMapPrior's declaration comment in SceneDensify.h)
+// Evaluate one pixel without publishing a partially filled DepthData::priorMap.
+static float ComputeIntraMapPriorAt(const DepthMap& depthMap, const NormalMap& normalMap,
+	const Eigen::Vector2f& focal, const Eigen::Vector2f& principal, const ImageRef& pos)
+{
+	ASSERT(!depthMap.empty() && Image8U::isInside(pos, depthMap.size()));
+	ASSERT(normalMap.empty() || normalMap.size() == depthMap.size());
+	ASSERT(focal.x() > 0.f && focal.y() > 0.f);
+	const bool bHasNormal(!normalMap.empty());
+	const int r(pos.y), c(pos.x);
+	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
+	const float invKmin(1.f / 4.f);
+	// fit a slope-aware local depth plane using only depth-similar neighbors
+	Depth w;
+	Eigen::Vector2f gradient;
+	if (!FitDepthGradient(depthMap, pos, w, gradient))
+		return 0.f;                                         // no depth, or not on a locally coherent surface
+	const float wx(gradient.x()), wy(gradient.y());
+	// slope-aware planarity + inlier quorum over the 3x3 window:
+	// count neighbors whose depth matches the fitted plane prediction (not just the center depth)
+	int nInl(0);
+	float sumE2(0);
+	const auto accumulate = [&](int rr, int cc, int x, int y) {
+		ASSERT(rr >= 0 && rr < depthMap.rows && cc >= 0 && cc < depthMap.cols);
+		ASSERT(x >= -1 && x <= 1 && y >= -1 && y <= 1 && (x != 0 || y != 0));
+		ASSERT(rr == r+y && cc == c+x && w > 0);
+		const Depth dN(depthMap(rr,cc));
+		if (dN <= 0) return;
+		const float dpred(w + wx*x + wy*y);
+		const float e(ABS(dN-dpred)/w);
+		if (e < band) { ++nInl; sumE2 += SQUARE(e/band); }
+	};
+	if (r > 0 && r+1 < depthMap.rows && c > 0 && c+1 < depthMap.cols) {
+		accumulate(r-1,c-1,-1,-1);
+		accumulate(r-1,c,   0,-1);
+		accumulate(r-1,c+1, 1,-1);
+		accumulate(r,  c-1,-1, 0);
+		accumulate(r,  c+1, 1, 0);
+		accumulate(r+1,c-1,-1, 1);
+		accumulate(r+1,c,   0, 1);
+		accumulate(r+1,c+1, 1, 1);
+	} else {
+		for (int y=-1; y<=1; ++y) {
+			const int rr(r+y);
+			if (rr<0 || rr>=depthMap.rows) continue;
+			for (int x=-1; x<=1; ++x) {
+				if (x==0 && y==0) continue;
+				const int cc(c+x);
+				if (cc<0 || cc>=depthMap.cols) continue;
+				accumulate(rr,cc,x,y);
+			}
+		}
+	}
+	if (nInl < 3)
+		return 0.f;
+	const float Pplane(EXP(-sumE2/nInl));
+	const float gate(1.f - EXP(-(float)nInl*invKmin));
+	// normal agreement: depth-gradient normal vs stored (photometric) normal = burst discriminator.
+	// On a real surface the two coincide; on a textureless/repetitive burst the photometric normal
+	// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
+	float Pnorm(1.f);
+	if (bHasNormal) {
+		const Normal nGrad(NormalFromDepthGradient(focal, principal, pos, w, gradient));
+		Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
+	}
+	return CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);
+}
+/*----------------------------------------------------------------*/
+
 void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap, bool bParallel) const
 {
 	const DepthMap& depthMap = depthData.depthMap;
 	const NormalMap& normalMap = depthData.normalMap;
-	const bool bHasNormal(!normalMap.empty());
+	ASSERT(!depthMap.empty() && (normalMap.empty() || normalMap.size() == depthMap.size()));
 	const Matrix3x3f K(depthData.GetView().camera.K);
 	ASSERT(ISZERO(K(0,1)));
 	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
-	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
-	// the same band from Params::thDepth == CONFIRM_DEPTH)
-	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
-	const float invKmin(1.f / 4.f);                                // soft planar quorum (~4 inliers)
 	priorMap.create(depthMap.size());
-	priorMap.memset(0);
 	#ifdef DENSE_USE_OPENMP
 	#pragma omp parallel for if(bParallel)
 	#endif
-	for (int r=0; r<depthMap.rows; ++r) {
-		for (int c=0; c<depthMap.cols; ++c) {
-			// fit a slope-aware local depth plane using only depth-similar neighbors
-			const ImageRef pos(c,r);
-			Depth w;
-			Eigen::Vector2f gradient;
-			if (!FitDepthGradient(depthMap, pos, w, gradient))
-				continue;                                          // no depth, or not on a locally coherent surface
-			const float wx(gradient.x()), wy(gradient.y());
-			// slope-aware planarity + inlier quorum over the 3x3 window:
-			// count neighbors whose depth matches the fitted plane prediction (not just the center depth)
-			int nInl(0);
-			float sumE2(0);
-			const auto accumulate = [&](int rr, int cc, int x, int y) {
-				ASSERT(rr >= 0 && rr < depthMap.rows && cc >= 0 && cc < depthMap.cols);
-				ASSERT(x >= -1 && x <= 1 && y >= -1 && y <= 1 && (x != 0 || y != 0));
-				ASSERT(rr == r+y && cc == c+x && w > 0);
-				const Depth dN(depthMap(rr,cc));
-				if (dN <= 0) return;
-				const float dpred(w + wx*x + wy*y);
-				const float e(ABS(dN-dpred)/w);
-				if (e < band) { ++nInl; sumE2 += SQUARE(e/band); }
-			};
-			if (r > 0 && r+1 < depthMap.rows && c > 0 && c+1 < depthMap.cols) {
-				accumulate(r-1,c-1,-1,-1);
-				accumulate(r-1,c,   0,-1);
-				accumulate(r-1,c+1, 1,-1);
-				accumulate(r,  c-1,-1, 0);
-				accumulate(r,  c+1, 1, 0);
-				accumulate(r+1,c-1,-1, 1);
-				accumulate(r+1,c,   0, 1);
-				accumulate(r+1,c+1, 1, 1);
-			} else {
-				for (int y=-1; y<=1; ++y) {
-					const int rr(r+y);
-					if (rr<0 || rr>=depthMap.rows) continue;
-					for (int x=-1; x<=1; ++x) {
-						if (x==0 && y==0) continue;
-						const int cc(c+x);
-						if (cc<0 || cc>=depthMap.cols) continue;
-						accumulate(rr,cc,x,y);
-					}
-				}
-			}
-			if (nInl < 3)
-				continue;
-			const float Pplane(EXP(-sumE2/nInl));
-			const float gate(1.f - EXP(-(float)nInl*invKmin));
-			// normal agreement: depth-gradient normal vs stored (photometric) normal = burst discriminator.
-			// On a real surface the two coincide; on a textureless/repetitive burst the photometric normal
-			// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
-			float Pnorm(1.f);
-			if (bHasNormal) {
-				const Normal nGrad(NormalFromDepthGradient(focal, principal, pos, w, gradient));
-				Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
-			}
-			priorMap(r,c) = CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);
-		}
-	}
+	for (int r=0; r<depthMap.rows; ++r)
+		for (int c=0; c<depthMap.cols; ++c)
+			priorMap(r,c) = ComputeIntraMapPriorAt(depthMap, normalMap, focal, principal, ImageRef(c,r));
 } // ComputeIntraMapPrior
 /*----------------------------------------------------------------*/
 
@@ -2796,8 +2803,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// fractional "virtual" view/pixel support so that an inlier lying on a locally coherent surface but
 	// confirmed by too few views/pixels is still kept (same prior used by AdjustConfidence); empty when off
 	const bool bUsePrior(OPTDENSE::fFusePriorWeight > 0);
-	// Each reference is fused once; keep only its newly computed full prior.
-	// Existing shared caches remain available to their other consumers.
+	// Recycled seeds can recur; retain a full scratch prior for that serial path.
+	// Other references evaluate only the seed pixels requested by nonempty clusters.
 	ConfidenceMap fusionPrior;
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
@@ -2825,14 +2832,20 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		const ConfidenceMap* pPrior(nullptr);
+		Eigen::Vector2f priorFocal, priorPrincipal;
 		if (bUsePrior) {
-			if (depthData.priorMap.empty()) {
+			if (!depthData.priorMap.empty()) {
+				pPrior = &depthData.priorMap;
+			} else if (bRecycleDropped) {
 				ComputeIntraMapPrior(depthData, fusionPrior, true);
 				pPrior = &fusionPrior;
 			} else {
-				pPrior = &depthData.priorMap;
+				const Matrix3x3f K(depthData.GetView().camera.K);
+				ASSERT(ISZERO(K(0,1)));
+				priorFocal = Eigen::Vector2f(K(0,0), K(1,1));
+				priorPrincipal = Eigen::Vector2f(K(0,2), K(1,2));
 			}
-			ASSERT(pPrior->size() == depthData.depthMap.size());
+			ASSERT(!pPrior || pPrior->size() == depthData.depthMap.size());
 		}
 		// make sure all neighbors are cached
 		neighbors.Memset(0);
@@ -2913,7 +2926,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			auto& fusedContraViews(state.fusedContraViews);
 			auto& fusedNormViews(state.fusedNormViews);
 			auto& clusterMembers(state.clusterMembers);
-			const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * (*pPrior)(seed) : 0.f);
+			// Keep the original comparisons even for nonfinite prior values; real support
+			// alone is not an excuse to skip a prior that can make those comparisons false.
+			const float virtualSupport(bUsePrior && !fusedViews.empty() ? OPTDENSE::fFusePriorWeight *
+				(pPrior ? (*pPrior)(seed) : ComputeIntraMapPriorAt(depthData.depthMap, depthData.normalMap,
+					priorFocal, priorPrincipal, seed)) : 0.f);
 			bool bClusterKept(false);
 			if (!fusedViews.empty() &&
 				(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
